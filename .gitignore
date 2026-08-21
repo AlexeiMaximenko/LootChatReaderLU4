@@ -1,0 +1,11 @@
+bin/
+obj/
+publish/
+verify-build/
+single/
+single-*/
+settings.json
+cache/
+.vs/
+*.user
+*.suo
