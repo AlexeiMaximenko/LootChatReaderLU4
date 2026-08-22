@@ -43,6 +43,7 @@ internal sealed class MainForm : Form
     private long _totalAdena;
     private long _totalXp;
     private long _totalSp;
+    private nint _targetWindowHandle;
 
     public MainForm()
     {
@@ -98,7 +99,7 @@ internal sealed class MainForm : Form
         topPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
         topPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
 
-        _selectRegionButton.Text = "Select Area";
+        _selectRegionButton.Text = "Select Window / Area";
         _selectRegionButton.AutoSize = true;
         _selectRegionButton.Height = 32;
         _selectRegionButton.Click += SelectRegionButtonOnClick;
@@ -414,30 +415,63 @@ internal sealed class MainForm : Form
         }
     }
 
-    private void SelectRegionButtonOnClick(object? sender, EventArgs e)
+    private async void SelectRegionButtonOnClick(object? sender, EventArgs e)
     {
-        var wasVisible = Visible;
-        Hide();
-        using var selector = new RegionSelectorForm(_settings.CaptureRegion);
-        var result = selector.ShowDialog();
-        if (wasVisible)
+        using var windowPicker = new WindowPickerForm(_settings.TargetProcessName);
+        if (windowPicker.ShowDialog(this) != DialogResult.OK || windowPicker.SelectedWindow is null)
         {
-            Show();
-            Activate();
+            return;
         }
 
+        var selectedWindow = windowPicker.SelectedWindow;
+        StopMonitoring();
+        Hide();
+        ScreenCaptureService.RestoreAndActivate(selectedWindow.Handle);
+        await Task.Delay(350);
+        if (!ScreenCaptureService.TryGetWindowBounds(selectedWindow.Handle, out var windowBounds))
+        {
+            Show();
+            MessageBox.Show(
+                this,
+                "The selected window is no longer available.",
+                "Window Selection",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return;
+        }
+
+        var initialScreenRegion = Rectangle.Empty;
+        if (_settings.HasCaptureRegion
+            && selectedWindow.ProcessName.Equals(_settings.TargetProcessName, StringComparison.OrdinalIgnoreCase))
+        {
+            initialScreenRegion = ScreenCaptureService.GetScreenRegion(
+                selectedWindow.Handle,
+                _settings.CaptureRegion,
+                new Size(_settings.ReferenceWindowWidth, _settings.ReferenceWindowHeight));
+        }
+
+        using var selector = new RegionSelectorForm(windowBounds, initialScreenRegion);
+        var result = selector.ShowDialog();
+        Show();
+        Activate();
         if (result != DialogResult.OK)
         {
             return;
         }
 
-        StopMonitoring();
         _eventTracker.Reset();
         _chatMotionDetector.Reset();
-        _settings.SetCaptureRegion(selector.SelectedRegion);
+        selectedWindow = selectedWindow with { Bounds = windowBounds, IsMinimized = false };
+        var relativeRegion = new Rectangle(
+            selector.SelectedRegion.X - windowBounds.X,
+            selector.SelectedRegion.Y - windowBounds.Y,
+            selector.SelectedRegion.Width,
+            selector.SelectedRegion.Height);
+        _settings.SetCaptureTarget(selectedWindow, relativeRegion);
+        _targetWindowHandle = selectedWindow.Handle;
         _settings.Save(_settingsPath);
         UpdateRegionLabel();
-        SetStatus("Area selected. Ready to start recognition.", false);
+        SetStatus("Game window and chat area selected. Ready to start recognition.", false);
         UpdateControls();
     }
 
@@ -458,12 +492,26 @@ internal sealed class MainForm : Form
         {
             MessageBox.Show(
                 this,
-                "Select the system chat area first.",
-                "Area Not Selected",
+                "Select the game window and system chat area first.",
+                "Capture Target Not Selected",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
             return;
         }
+
+        var targetWindow = ScreenCaptureService.ResolveWindow(_settings, _targetWindowHandle);
+        if (targetWindow is null)
+        {
+            MessageBox.Show(
+                this,
+                $"The selected game window ({_settings.TargetProcessName}) is not running.",
+                "Game Window Not Found",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+
+        _targetWindowHandle = targetWindow.Handle;
 
         try
         {
@@ -523,7 +571,13 @@ internal sealed class MainForm : Form
         var chatWheelRevisionAtCaptureStart = _chatWheelRevision;
         try
         {
-            using var screenshot = ScreenCaptureService.Capture(_settings.CaptureRegion);
+            var targetWindow = ScreenCaptureService.ResolveWindow(_settings, _targetWindowHandle)
+                ?? throw new InvalidOperationException("The selected game window is no longer running.");
+            _targetWindowHandle = targetWindow.Handle;
+            using var screenshot = await Task.Run(() => ScreenCaptureService.CaptureWindowRegion(
+                targetWindow.Handle,
+                _settings.CaptureRegion,
+                new Size(_settings.ReferenceWindowWidth, _settings.ReferenceWindowHeight)));
             var oldPreview = _preview.Image;
             _preview.Image = new Bitmap(screenshot);
             oldPreview?.Dispose();
@@ -560,6 +614,11 @@ internal sealed class MainForm : Form
             }
 
             SetStatus($"Monitoring is running · recognized lines in view: {events.Count}", true);
+        }
+        catch (WindowCaptureUnavailableException exception)
+        {
+            _eventTracker.BeginResynchronization();
+            SetStatus($"Monitoring is waiting for a game frame · {exception.Message}", false);
         }
         catch (Exception exception)
         {
@@ -732,7 +791,16 @@ internal sealed class MainForm : Form
 
     private void MouseWheelMonitorOnWheelScrolled(object? sender, MouseWheelActivity activity)
     {
-        if (!_monitoring || !_settings.CaptureRegion.Contains(activity.ScreenLocation))
+        if (!_monitoring || _targetWindowHandle == nint.Zero)
+        {
+            return;
+        }
+
+        var screenRegion = ScreenCaptureService.GetScreenRegion(
+            _targetWindowHandle,
+            _settings.CaptureRegion,
+            new Size(_settings.ReferenceWindowWidth, _settings.ReferenceWindowHeight));
+        if (!screenRegion.Contains(activity.ScreenLocation))
         {
             return;
         }
@@ -763,8 +831,8 @@ internal sealed class MainForm : Form
     private void UpdateRegionLabel()
     {
         _regionLabel.Text = _settings.HasCaptureRegion
-            ? $"Area: {_settings.CaptureWidth}×{_settings.CaptureHeight} ({_settings.CaptureX}, {_settings.CaptureY})"
-            : "Area not selected";
+            ? $"Window: {_settings.TargetProcessName} · area: {_settings.CaptureWidth}×{_settings.CaptureHeight}"
+            : "Window and area not selected";
     }
 
     private void UpdateControls()

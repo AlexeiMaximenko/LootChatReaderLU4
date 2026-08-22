@@ -8,17 +8,31 @@ internal sealed class AppSettings
     public int CaptureY { get; set; }
     public int CaptureWidth { get; set; }
     public int CaptureHeight { get; set; }
+    public int ReferenceWindowWidth { get; set; }
+    public int ReferenceWindowHeight { get; set; }
+    public string TargetProcessName { get; set; } = string.Empty;
+    public string TargetWindowTitle { get; set; } = string.Empty;
+    public string TargetWindowClass { get; set; } = string.Empty;
 
     public Rectangle CaptureRegion => new(CaptureX, CaptureY, CaptureWidth, CaptureHeight);
 
-    public bool HasCaptureRegion => CaptureWidth >= 80 && CaptureHeight >= 30;
+    public bool HasCaptureRegion => CaptureWidth >= 80
+        && CaptureHeight >= 30
+        && ReferenceWindowWidth > 0
+        && ReferenceWindowHeight > 0
+        && TargetProcessName.Length > 0;
 
-    public void SetCaptureRegion(Rectangle region)
+    public void SetCaptureTarget(WindowDescriptor window, Rectangle relativeRegion)
     {
-        CaptureX = region.X;
-        CaptureY = region.Y;
-        CaptureWidth = region.Width;
-        CaptureHeight = region.Height;
+        CaptureX = relativeRegion.X;
+        CaptureY = relativeRegion.Y;
+        CaptureWidth = relativeRegion.Width;
+        CaptureHeight = relativeRegion.Height;
+        ReferenceWindowWidth = window.Bounds.Width;
+        ReferenceWindowHeight = window.Bounds.Height;
+        TargetProcessName = window.ProcessName;
+        TargetWindowTitle = window.Title;
+        TargetWindowClass = window.ClassName;
     }
 
     public static AppSettings Load(string path)

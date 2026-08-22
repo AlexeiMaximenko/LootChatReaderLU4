@@ -1,6 +1,6 @@
 # LootChatReaderLU4
 
-Current version: **1.04**
+Current version: **1.05**
 
 LootChatReaderLU4 is a local Windows application that reads the LU4 system chat from a selected screen area and keeps loot statistics.
 
@@ -23,12 +23,14 @@ Screenshots and recognized chat messages are not written to disk. Settings, the 
 
 ## Usage
 
-1. Start `LootChatReader.exe`.
-2. Click **Select Area** and select only the system chat message area.
+1. Start `LootChatReader.exe` and the LU4 client.
+2. Click **Select Window / Area**, select the LU4 window, and mark only the system chat message area.
 3. Click **Start**.
 4. Use **Stop** to pause monitoring and **Clear All** to reset the current statistics.
 
 Windowed or borderless-windowed game mode is recommended. Exclusive fullscreen can prevent Windows screen capture from reading the game frame.
+
+The capture is bound to the selected game window through Windows Graphics Capture. Other applications may cover the game without affecting recognition. Minimized capture is attempted as well; if the game stops producing frames while minimized, leave it restored behind other windows.
 
 ## Build
 

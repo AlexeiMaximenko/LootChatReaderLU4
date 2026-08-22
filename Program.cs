@@ -53,6 +53,29 @@ internal static class Program
             return;
         }
 
+        if (args.Length >= 1 && args[0].Equals("--window-list-test", StringComparison.OrdinalIgnoreCase))
+        {
+            RunWindowListTest();
+            return;
+        }
+
+        if (args.Length >= 2 && args[0].Equals("--window-capture-test", StringComparison.OrdinalIgnoreCase))
+        {
+            RunWindowCaptureTest(args[1]);
+            return;
+        }
+
+        if (args.Length >= 6 && args[0].Equals("--window-region-ocr-test", StringComparison.OrdinalIgnoreCase))
+        {
+            RunWindowRegionOcrTest(
+                args[1],
+                int.Parse(args[2]),
+                int.Parse(args[3]),
+                int.Parse(args[4]),
+                int.Parse(args[5]));
+            return;
+        }
+
         Application.Run(new MainForm());
     }
 
@@ -211,5 +234,50 @@ internal static class Program
         RequireCount("first event after empty baseline", tracker.Observe(new[] { E("C") }), 1);
 
         Console.WriteLine("SEQUENCE: OK");
+    }
+
+    private static void RunWindowListTest()
+    {
+        foreach (var window in ScreenCaptureService.EnumerateWindows())
+        {
+            Console.WriteLine(
+                $"0x{window.Handle:X}\t{window.ProcessName}\t{window.Bounds.Width}x{window.Bounds.Height}\tminimized={window.IsMinimized}\t{window.Title}");
+        }
+    }
+
+    private static void RunWindowCaptureTest(string processName)
+    {
+        var window = ScreenCaptureService.EnumerateWindows()
+            .FirstOrDefault(candidate => candidate.ProcessName.Equals(processName, StringComparison.OrdinalIgnoreCase))
+            ?? throw new InvalidOperationException($"No capturable window was found for {processName}.");
+        using var bitmap = ScreenCaptureService.CaptureWindowRegion(
+            window.Handle,
+            new Rectangle(Point.Empty, window.Bounds.Size),
+            window.Bounds.Size);
+        Console.WriteLine(
+            $"WINDOW CAPTURE: {window.ProcessName}; {bitmap.Width}x{bitmap.Height}; minimized={window.IsMinimized}");
+    }
+
+    private static void RunWindowRegionOcrTest(
+        string processName,
+        int x,
+        int y,
+        int width,
+        int height)
+    {
+        var window = ScreenCaptureService.EnumerateWindows()
+            .FirstOrDefault(candidate => candidate.ProcessName.Equals(processName, StringComparison.OrdinalIgnoreCase))
+            ?? throw new InvalidOperationException($"No capturable window was found for {processName}.");
+        using var bitmap = ScreenCaptureService.CaptureWindowRegion(
+            window.Handle,
+            new Rectangle(x, y, width, height),
+            window.Bounds.Size);
+        using var ocr = new OcrService(ApplicationDataPaths.RootDirectory);
+        var events = ocr.ReadEvents(bitmap);
+        Console.WriteLine($"WINDOW REGION OCR: {bitmap.Width}x{bitmap.Height}; events={events.Count}");
+        foreach (var item in events)
+        {
+            Console.WriteLine($"{item.Kind}\t{item.Value}\t{item.RawText}");
+        }
     }
 }

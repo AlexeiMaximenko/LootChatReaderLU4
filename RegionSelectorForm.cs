@@ -8,9 +8,9 @@ internal sealed class RegionSelectorForm : Form
 
     public Rectangle SelectedRegion { get; private set; }
 
-    public RegionSelectorForm(Rectangle initialRegion)
+    public RegionSelectorForm(Rectangle selectionBounds, Rectangle initialRegion)
     {
-        Bounds = SystemInformation.VirtualScreen;
+        Bounds = selectionBounds;
         StartPosition = FormStartPosition.Manual;
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
