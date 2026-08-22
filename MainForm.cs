@@ -594,6 +594,14 @@ internal sealed class MainForm : Form
             && _iconCatalog.Count > 0
             && iconMatch is null;
 
+        if (catalogRejected)
+        {
+            // Unconfirmed item candidates are almost always fragments produced by
+            // background highlights or adjacent fast-moving chat rows. Do not let
+            // them pollute either Full Logs or Summary.
+            return;
+        }
+
         var logItem = new ListViewItem(DateTime.Now.ToString("HH:mm:ss"));
         logItem.SubItems.Add(detectedEvent.KindLabel);
         logItem.SubItems.Add(detectedEvent.Value);

@@ -22,6 +22,7 @@ internal sealed partial class ItemIconCatalogService : IDisposable
     private Dictionary<string, ItemIconEntry> _itemsByName = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, ItemIconEntry> _itemsByNormalizedName = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, ItemIconEntry> _itemsByTierlessNormalizedName = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, ItemIconEntry> _itemsByRaritylessNormalizedName = new(StringComparer.OrdinalIgnoreCase);
 
     public ItemIconCatalogService(string dataDirectory)
     {
@@ -124,11 +125,21 @@ internal sealed partial class ItemIconCatalogService : IDisposable
         Dictionary<string, ItemIconEntry> byName;
         Dictionary<string, ItemIconEntry> byNormalizedName;
         Dictionary<string, ItemIconEntry> byTierlessNormalizedName;
+        Dictionary<string, ItemIconEntry> byRaritylessNormalizedName;
         lock (_catalogLock)
         {
             byName = _itemsByName;
             byNormalizedName = _itemsByNormalizedName;
             byTierlessNormalizedName = _itemsByTierlessNormalizedName;
+            byRaritylessNormalizedName = _itemsByRaritylessNormalizedName;
+        }
+
+        var normalized = NormalizeName(recognizedName);
+        if (normalized.Length < 2)
+        {
+            // Prevent punctuation-only OCR artifacts such as "-" from matching
+            // technical catalog entries named "_" or "__".
+            return null;
         }
 
         if (byName.TryGetValue(recognizedName, out var exact))
@@ -136,7 +147,6 @@ internal sealed partial class ItemIconCatalogService : IDisposable
             return new ItemIconMatch(exact, false);
         }
 
-        var normalized = NormalizeName(recognizedName);
         if (byNormalizedName.TryGetValue(normalized, out exact))
         {
             return new ItemIconMatch(exact, false);
@@ -156,6 +166,13 @@ internal sealed partial class ItemIconCatalogService : IDisposable
         if (byTierlessNormalizedName.TryGetValue(normalized, out exact)
             || (joinedLetters != normalized
                 && byTierlessNormalizedName.TryGetValue(joinedLetters, out exact)))
+        {
+            return new ItemIconMatch(exact, true);
+        }
+
+        if (byRaritylessNormalizedName.TryGetValue(normalized, out exact)
+            || (joinedLetters != normalized
+                && byRaritylessNormalizedName.TryGetValue(joinedLetters, out exact)))
         {
             return new ItemIconMatch(exact, true);
         }
@@ -212,7 +229,7 @@ internal sealed partial class ItemIconCatalogService : IDisposable
 
         var localPath = await _iconDownloads.GetOrAdd(
             entry.IconPath,
-            path => DownloadIconAsync(path, cancellationToken));
+            path => DownloadIconWithFallbackAsync(path, cancellationToken));
         if (localPath is null || !File.Exists(localPath))
         {
             return null;
@@ -306,6 +323,23 @@ internal sealed partial class ItemIconCatalogService : IDisposable
         }
     }
 
+    private async Task<string?> DownloadIconWithFallbackAsync(
+        string iconPath,
+        CancellationToken cancellationToken)
+    {
+        var localPath = await DownloadIconAsync(iconPath, cancellationToken);
+        if (localPath is not null)
+        {
+            return localPath;
+        }
+
+        // The wiki currently references reagent-cache PNGs that return HTTP 404.
+        // Use its available generic box icon so these items are not left blank.
+        return iconPath.Contains("unrefined_reagent_box_", StringComparison.OrdinalIgnoreCase)
+            ? await DownloadIconAsync("/i64/etc_jewel_box_i00.png", cancellationToken)
+            : null;
+    }
+
     private void LoadCachedCatalog()
     {
         try
@@ -329,11 +363,12 @@ internal sealed partial class ItemIconCatalogService : IDisposable
 
     private void ReplaceCatalog(IEnumerable<ItemIconEntry> entries)
     {
+        var entryList = entries.ToArray();
         var byName = new Dictionary<string, ItemIconEntry>(StringComparer.OrdinalIgnoreCase);
         var byNormalizedName = new Dictionary<string, ItemIconEntry>(StringComparer.OrdinalIgnoreCase);
         var tierlessCandidates = new Dictionary<string, ItemIconEntry>(StringComparer.OrdinalIgnoreCase);
         var ambiguousTierlessNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var entry in entries)
+        foreach (var entry in entryList)
         {
             byName.TryAdd(entry.Name, entry);
             byNormalizedName.TryAdd(NormalizeName(entry.Name), entry);
@@ -361,11 +396,32 @@ internal sealed partial class ItemIconCatalogService : IDisposable
             tierlessCandidates[tierlessKey] = entry;
         }
 
+        var raritylessCandidates = entryList
+            .Select(entry => new
+            {
+                Entry = entry,
+                BaseName = RaritySuffixRegex().Replace(entry.Name, string.Empty).Trim()
+            })
+            .Where(candidate => !candidate.BaseName.Equals(candidate.Entry.Name, StringComparison.OrdinalIgnoreCase))
+            .GroupBy(candidate => NormalizeName(candidate.BaseName), StringComparer.OrdinalIgnoreCase)
+            .Where(group => group.Select(candidate => candidate.Entry.IconPath)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Count() == 1)
+            .ToDictionary(
+                group => group.Key,
+                group =>
+                {
+                    var first = group.First();
+                    return first.Entry with { Name = first.BaseName };
+                },
+                StringComparer.OrdinalIgnoreCase);
+
         lock (_catalogLock)
         {
             _itemsByName = byName;
             _itemsByNormalizedName = byNormalizedName;
             _itemsByTierlessNormalizedName = tierlessCandidates;
+            _itemsByRaritylessNormalizedName = raritylessCandidates;
         }
     }
 
@@ -432,6 +488,9 @@ internal sealed partial class ItemIconCatalogService : IDisposable
 
     [GeneratedRegex(@"\s+Tier\s+[A-Za-z0-9]+$", RegexOptions.IgnoreCase)]
     private static partial Regex TierSuffixRegex();
+
+    [GeneratedRegex(@"\s+(?:Common|Uncommon|Rare)$", RegexOptions.IgnoreCase)]
+    private static partial Regex RaritySuffixRegex();
 }
 
 internal sealed record ItemIconEntry(int Id, string Name, string IconPath, string ItemPath);

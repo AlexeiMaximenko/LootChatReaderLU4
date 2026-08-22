@@ -108,7 +108,8 @@ internal static class Program
             ["Manster Eye Meat"] = "Monster Eye Meat",
             ["Ashen Reagent Cache"] = "Ashen Reagent Cache Tier D",
             ["Charcoal"] = "Charcoal",
-            ["Cargo Box"] = "Cargo Box"
+            ["Cargo Box"] = "Cargo Box",
+            ["Key Imprint"] = "Key Imprint"
         };
 
         foreach (var testCase in cases)
@@ -122,6 +123,19 @@ internal static class Program
 
             Console.WriteLine($"RESOLVE: {testCase.Key} -> {match.Entry.Name}");
         }
+
+        if (catalog.Resolve("-") is not null)
+        {
+            throw new InvalidOperationException("Punctuation-only OCR artifact was accepted by the catalog.");
+        }
+
+        Console.WriteLine("REJECT: -");
+
+        var reagent = catalog.Resolve("Ashen Reagent Cache")
+            ?? throw new InvalidOperationException("Ashen Reagent Cache was not resolved for the icon test.");
+        using var reagentIcon = catalog.LoadIconAsync(reagent.Entry).GetAwaiter().GetResult()
+            ?? throw new InvalidOperationException("The reagent-cache fallback icon could not be loaded.");
+        Console.WriteLine($"REAGENT ICON: {reagentIcon.Width}x{reagentIcon.Height}");
     }
 
     private static void RunMotionTest()
