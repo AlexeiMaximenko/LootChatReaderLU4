@@ -13,6 +13,7 @@ internal sealed class TrackerView : UserControl
     private readonly Stopwatch _elapsedStopwatch = new();
     private readonly EventSequenceTracker _eventTracker = new();
     private readonly ChatListMotionDetector _chatMotionDetector = new();
+    private readonly ChatFrameMotionDetector _chatFrameMotionDetector = new();
     private readonly MouseWheelMonitor _mouseWheelMonitor = new();
     private readonly ItemIconCatalogService _iconCatalog;
     private readonly ImageList _itemImages = new();
@@ -518,6 +519,7 @@ internal sealed class TrackerView : UserControl
 
         _eventTracker.Reset();
         _chatMotionDetector.Reset();
+        _chatFrameMotionDetector.Reset();
         selectedWindow = selectedWindow with { Bounds = windowBounds, IsMinimized = false };
         var relativeRegion = new Rectangle(
             selector.SelectedRegion.X - windowBounds.X,
@@ -633,6 +635,7 @@ internal sealed class TrackerView : UserControl
             if (targetWindow is null)
             {
                 _eventTracker.BeginResynchronization();
+                _chatFrameMotionDetector.Reset();
                 SetStatus("Monitoring is running · OCR paused: game window unavailable.", true);
                 return;
             }
@@ -640,6 +643,7 @@ internal sealed class TrackerView : UserControl
             if (targetWindow.IsMinimized)
             {
                 _eventTracker.BeginResynchronization();
+                _chatFrameMotionDetector.Reset();
                 SetStatus("Monitoring is running · OCR paused while the game window is minimized.", true);
                 return;
             }
@@ -654,12 +658,15 @@ internal sealed class TrackerView : UserControl
                 _preview.Image = _latestPreview;
             }
 
+            var visualVerticalShift = _chatFrameMotionDetector.Observe(screenshot);
             var events = await Task.Run(() => _ocrService.ReadEvents(screenshot));
             events = CanonicalizeForTracking(events);
             var listMotion = _chatMotionDetector.Observe(events);
             var chatWheelActive = chatWheelRevisionAtCaptureStart != _chatWheelRevision
                 || DateTime.UtcNow < _ignoreChatWheelUntilUtc;
-            var scrollReplaySuppressed = listMotion == ChatListMotion.ScrollUp || chatWheelActive;
+            var scrollReplaySuppressed = listMotion == ChatListMotion.ScrollUp
+                || visualVerticalShift > 4
+                || chatWheelActive;
             if (_primeNextCapture)
             {
                 _eventTracker.SetBaselineImmediately(events);
@@ -680,7 +687,7 @@ internal sealed class TrackerView : UserControl
                 return;
             }
 
-            foreach (var detectedEvent in _eventTracker.Observe(events))
+            foreach (var detectedEvent in _eventTracker.Observe(events, visualVerticalShift))
             {
                 AddEvent(detectedEvent);
             }
@@ -690,6 +697,7 @@ internal sealed class TrackerView : UserControl
         catch (WindowCaptureUnavailableException exception)
         {
             _eventTracker.BeginResynchronization();
+            _chatFrameMotionDetector.Reset();
             SetStatus($"Monitoring is running · OCR paused: {exception.Message}", true);
         }
         catch (Exception exception)
@@ -976,6 +984,7 @@ internal sealed class TrackerView : UserControl
         ArchiveCurrentSession();
         _eventTracker.BeginResynchronization();
         _chatMotionDetector.Reset();
+        _chatFrameMotionDetector.Reset();
         _eventsList.Items.Clear();
         _dropSummaryList.Items.Clear();
         _questSummaryList.Items.Clear();

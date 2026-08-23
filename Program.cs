@@ -58,7 +58,8 @@ internal static class Program
                 args[1],
                 options.Contains("details"),
                 placement,
-                options.Contains("topmost"));
+                options.Contains("topmost"),
+                options.Contains("inactive"));
             return;
         }
 
@@ -86,6 +87,12 @@ internal static class Program
         if (args.Length >= 1 && args[0].Equals("--motion-test", StringComparison.OrdinalIgnoreCase))
         {
             RunMotionTest();
+            return;
+        }
+
+        if (args.Length >= 1 && args[0].Equals("--frame-motion-test", StringComparison.OrdinalIgnoreCase))
+        {
+            RunFrameMotionTest();
             return;
         }
 
@@ -352,7 +359,8 @@ internal static class Program
         string outputPath,
         bool showDetails,
         OverlayPlacement placement,
-        bool targetTopmost)
+        bool targetTopmost,
+        bool targetInactive)
     {
         using var target = new Form
         {
@@ -384,6 +392,7 @@ internal static class Program
             34567,
             [new OverlayItem("Animal Skin", 12), new OverlayItem("Stem", 8), new OverlayItem("Iron Ore", 3)],
             [new OverlayItem("Monster Eye Meat", 7), new OverlayItem("Basilisk's Gizzard", 2)]));
+        Form? foregroundWindow = null;
         if (showDetails)
         {
             overlay.ShowDetailsForDiagnostic(false);
@@ -400,6 +409,7 @@ internal static class Program
             }
             screenshot.Save(outputPath, System.Drawing.Imaging.ImageFormat.Png);
             Console.WriteLine(overlay.GetDiagnosticState());
+            foregroundWindow?.Close();
             target.Close();
         };
         target.Shown += (_, _) =>
@@ -409,12 +419,35 @@ internal static class Program
                 target.TopMost = true;
                 target.TopMost = false;
             }
-            target.Activate();
-            target.BringToFront();
+            if (targetInactive)
+            {
+                foregroundWindow = new Form
+                {
+                    Text = "Foreground diagnostic window",
+                    StartPosition = FormStartPosition.Manual,
+                    Bounds = new Rectangle(1060, 120, 240, 180),
+                    ShowInTaskbar = false
+                };
+                foregroundWindow.Show();
+                foregroundWindow.Activate();
+                foregroundWindow.BringToFront();
+                overlay.UpdateSnapshot(new OverlaySnapshot(
+                    654321,
+                    987654,
+                    45678,
+                    [new OverlayItem("Updated while inactive", 2)],
+                    []));
+            }
+            else
+            {
+                target.Activate();
+                target.BringToFront();
+            }
             timer.Start();
         };
         Application.Run(target);
         timer.Dispose();
+        foregroundWindow?.Dispose();
         Console.WriteLine($"OVERLAY RENDER: {outputPath}");
     }
 
@@ -577,6 +610,55 @@ internal static class Program
         Console.WriteLine($"MOTION: up={scrollUp}; down={scrollDown}");
     }
 
+    private static void RunFrameMotionTest()
+    {
+        static Bitmap CreateFrame(int offset)
+        {
+            var bitmap = new Bitmap(360, 160, System.Drawing.Imaging.PixelFormat.Format24bppRgb);
+            using var graphics = Graphics.FromImage(bitmap);
+            graphics.Clear(Color.FromArgb(24, 27, 25));
+            graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.SingleBitPerPixelGridFit;
+            using var font = new Font("Segoe UI", 12F, FontStyle.Regular, GraphicsUnit.Pixel);
+            using var white = new SolidBrush(Color.FromArgb(217, 205, 183));
+            using var yellow = new SolidBrush(Color.FromArgb(235, 220, 20));
+            using var green = new SolidBrush(Color.FromArgb(80, 220, 95));
+            var lines = new[]
+            {
+                ("Power of the spirits enabled.", white),
+                ("Kelias landed a critical hit!", green),
+                ("You have acquired 600 XP and 42 SP.", white),
+                ("You have obtained 123 Adena.", yellow),
+                ("Use Soulshot (D-Grade).", white)
+            };
+            for (var index = 0; index < lines.Length; index++)
+            {
+                graphics.DrawString(lines[index].Item1, font, lines[index].Item2, 8, 24 + index * 20 + offset);
+            }
+            return bitmap;
+        }
+
+        using var first = CreateFrame(0);
+        using var moved = CreateFrame(-15);
+        var detector = new ChatFrameMotionDetector();
+        detector.Observe(first);
+        var shift = detector.Observe(moved);
+        if (Math.Abs(shift + 15) > 2)
+        {
+            throw new InvalidOperationException(
+                $"Expected visual chat shift near -15, got {shift} (confidence {detector.LastConfidence:F2}).");
+        }
+
+        var stationaryDetector = new ChatFrameMotionDetector();
+        stationaryDetector.Observe(first);
+        var stationary = stationaryDetector.Observe(first);
+        if (stationary != 0)
+        {
+            throw new InvalidOperationException($"Stationary chat was reported as shift {stationary}.");
+        }
+
+        Console.WriteLine($"FRAME MOTION: shift={shift}; confidence={detector.LastConfidence:F2}; stationary=0");
+    }
+
     private static void RunSequenceTest()
     {
         static DetectedEvent E(string value) => new(
@@ -615,6 +697,39 @@ internal static class Program
 
         tracker.SetBaselineImmediately(Array.Empty<DetectedEvent>());
         RequireCount("first event after empty baseline", tracker.Observe(new[] { E("C") }), 1);
+
+        static DetectedEvent Positioned(string value, int top) => new(
+            DetectedEventKind.Drop, value, value, top, value, 1, 0, 0, 0);
+
+        tracker.SetBaselineImmediately(new[] { Positioned("XP 600", 100), Positioned("Adena 123", 120) });
+        RequireCount(
+            "same instances after automatic chat movement",
+            tracker.Observe(
+                new[] { Positioned("XP 600", 85), Positioned("Adena 123", 105) },
+                -15),
+            0);
+
+        tracker.SetBaselineImmediately(new[] { Positioned("XP 600", 100), Positioned("Adena 123", 120) });
+        RequireCount(
+            "identical replacement loot after automatic chat movement",
+            tracker.Observe(
+                new[] { Positioned("XP 600", 100), Positioned("Adena 123", 120) },
+                -15),
+            2);
+
+        tracker.SetBaselineImmediately(new[] { Positioned("XP 600", 100), Positioned("Adena 123", 120) });
+        RequireCount(
+            "identical appended loot after automatic chat movement",
+            tracker.Observe(
+                new[]
+                {
+                    Positioned("XP 600", 85),
+                    Positioned("Adena 123", 105),
+                    Positioned("XP 600", 125),
+                    Positioned("Adena 123", 145)
+                },
+                -15),
+            2);
 
         Console.WriteLine("SEQUENCE: OK");
     }

@@ -9,7 +9,9 @@ internal sealed class EventSequenceTracker
     private int _candidateFrames;
     private bool _needsBaseline = true;
 
-    public IReadOnlyList<DetectedEvent> Observe(IReadOnlyList<DetectedEvent> current)
+    public IReadOnlyList<DetectedEvent> Observe(
+        IReadOnlyList<DetectedEvent> current,
+        int visualVerticalShift = 0)
     {
         if (current.Count == 0 && !_needsBaseline)
         {
@@ -37,6 +39,18 @@ internal sealed class EventSequenceTracker
             return Array.Empty<DetectedEvent>();
         }
 
+        if (visualVerticalShift < -4)
+        {
+            var newAfterMovement = FindUnmatchedAfterMovement(
+                _baseline,
+                current,
+                visualVerticalShift);
+            _baseline = current.ToArray();
+            _candidate = current.ToArray();
+            _candidateFrames = 1;
+            return newAfterMovement;
+        }
+
         if (SequencesEqual(_baseline, current))
         {
             return Array.Empty<DetectedEvent>();
@@ -50,6 +64,45 @@ internal sealed class EventSequenceTracker
         _candidate = current.ToArray();
         _candidateFrames = 1;
         return current.Skip(newSuffixStart).ToArray();
+    }
+
+    private static IReadOnlyList<DetectedEvent> FindUnmatchedAfterMovement(
+        IReadOnlyList<DetectedEvent> previous,
+        IReadOnlyList<DetectedEvent> current,
+        int verticalShift)
+    {
+        const int positionTolerance = 8;
+        var matchedCurrent = new bool[current.Count];
+        foreach (var previousEvent in previous.OrderBy(item => item.Top))
+        {
+            var expectedTop = previousEvent.Top + verticalShift;
+            var bestIndex = -1;
+            var bestDistance = int.MaxValue;
+            for (var currentIndex = 0; currentIndex < current.Count; currentIndex++)
+            {
+                if (matchedCurrent[currentIndex]
+                    || current[currentIndex].Identity != previousEvent.Identity)
+                {
+                    continue;
+                }
+
+                var distance = Math.Abs(current[currentIndex].Top - expectedTop);
+                if (distance <= positionTolerance && distance < bestDistance)
+                {
+                    bestDistance = distance;
+                    bestIndex = currentIndex;
+                }
+            }
+
+            if (bestIndex >= 0)
+            {
+                matchedCurrent[bestIndex] = true;
+            }
+        }
+
+        return current
+            .Where((_, index) => !matchedCurrent[index])
+            .ToArray();
     }
 
     public void BeginResynchronization()

@@ -18,15 +18,11 @@ internal sealed record OverlaySnapshot(
 internal sealed class GameOverlayController : IDisposable
 {
     private const int Gap = 6;
-    private const uint GwHwndPrev = 3;
     private const uint SwpNoSize = 0x0001;
     private const uint SwpNoMove = 0x0002;
     private const uint SwpNoActivate = 0x0010;
     private const uint SwpNoOwnerZOrder = 0x0200;
-    private const long WsExTopmost = 0x00000008;
-    private static readonly nint HwndTop = nint.Zero;
     private static readonly nint HwndTopmost = new(-1);
-    private static readonly nint HwndNotTopmost = new(-2);
 
     private readonly AppSettings _settings;
     private readonly Func<nint> _targetWindowProvider;
@@ -39,6 +35,7 @@ internal sealed class GameOverlayController : IDisposable
     private bool _menuVisible;
     private bool _detailsVisible;
     private bool _showQuestItems;
+    private bool _disposed;
 
     public GameOverlayController(
         AppSettings settings,
@@ -48,6 +45,7 @@ internal sealed class GameOverlayController : IDisposable
         _settings = settings;
         _targetWindowProvider = targetWindowProvider;
         _saveSettings = saveSettings;
+        GlobalShiftKeyState.AddReference();
         _settings.OverlayDetailsWidth = Math.Clamp(_settings.OverlayDetailsWidth, 220, 1200);
         _settings.OverlayDetailsHeight = Math.Clamp(_settings.OverlayDetailsHeight, 120, 1200);
 
@@ -65,7 +63,7 @@ internal sealed class GameOverlayController : IDisposable
         };
         _details.Size = new Size(_settings.OverlayDetailsWidth, _settings.OverlayDetailsHeight);
 
-        _timer = new System.Windows.Forms.Timer { Interval = 80 };
+        _timer = new System.Windows.Forms.Timer { Interval = 25 };
         _timer.Tick += (_, _) => UpdateOverlayWindows();
         _timer.Start();
     }
@@ -159,14 +157,10 @@ internal sealed class GameOverlayController : IDisposable
             return;
         }
 
-        var shiftPressed = (GetAsyncKeyState(0x10) & 0x8000) != 0;
+        var shiftPressed = GlobalShiftKeyState.IsPressed;
         _stats.InteractionEnabled = shiftPressed;
         _menu.InteractionEnabled = shiftPressed;
         _details.InteractionEnabled = shiftPressed;
-        foreach (var window in new LayeredOverlayForm[] { _stats, _menu, _details })
-        {
-            window.SetNativeOwner(targetWindow);
-        }
 
         var horizontalStats = placement is OverlayPlacement.Top or OverlayPlacement.Bottom;
         _stats.SetHorizontal(horizontalStats);
@@ -228,68 +222,25 @@ internal sealed class GameOverlayController : IDisposable
         PlaceDirectlyAboveTarget(targetWindow);
     }
 
-    private void PlaceDirectlyAboveTarget(nint targetWindow)
+    private void PlaceDirectlyAboveTarget(nint _)
     {
-        var targetIsTopmost = (GetWindowLongPtr(targetWindow, -20).ToInt64() & WsExTopmost) != 0;
-        var targetIsForeground = GetForegroundWindow() == targetWindow;
-        if (targetIsTopmost || targetIsForeground)
-        {
-            foreach (var window in new LayeredOverlayForm[] { _stats, _menu, _details })
-            {
-                if (window.Visible && window.IsHandleCreated)
-                {
-                    SetWindowPos(
-                        window.Handle,
-                        HwndTopmost,
-                        0,
-                        0,
-                        0,
-                        0,
-                        SwpNoSize | SwpNoMove | SwpNoActivate | SwpNoOwnerZOrder);
-                }
-            }
-            return;
-        }
-
-        var overlayHandles = new HashSet<nint>
-        {
-            _stats.IsHandleCreated ? _stats.Handle : nint.Zero,
-            _menu.IsHandleCreated ? _menu.Handle : nint.Zero,
-            _details.IsHandleCreated ? _details.Handle : nint.Zero
-        };
-        var insertAfter = GetWindow(targetWindow, GwHwndPrev);
-        while (insertAfter != nint.Zero && overlayHandles.Contains(insertAfter))
-        {
-            insertAfter = GetWindow(insertAfter, GwHwndPrev);
-        }
-
-        var zOrderAnchor = insertAfter == nint.Zero ? HwndTop : insertAfter;
+        // Keep the independent overlay windows in one stable Z-order regardless
+        // of whether the game or this application is currently active. They are
+        // hidden separately whenever the selected game window is unavailable or
+        // minimized.
         foreach (var window in new LayeredOverlayForm[] { _stats, _menu, _details })
         {
-            if (!window.Visible || !window.IsHandleCreated)
+            if (window.Visible && window.IsHandleCreated)
             {
-                continue;
+                SetWindowPos(
+                    window.Handle,
+                    HwndTopmost,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SwpNoSize | SwpNoMove | SwpNoActivate | SwpNoOwnerZOrder);
             }
-
-            // A game may switch out of its topmost mode at runtime. Explicitly
-            // remove the overlay from the topmost band before restoring its
-            // position directly above the target.
-            SetWindowPos(
-                window.Handle,
-                HwndNotTopmost,
-                0,
-                0,
-                0,
-                0,
-                SwpNoSize | SwpNoMove | SwpNoActivate | SwpNoOwnerZOrder);
-            SetWindowPos(
-                window.Handle,
-                zOrderAnchor,
-                0,
-                0,
-                0,
-                0,
-                SwpNoSize | SwpNoMove | SwpNoActivate | SwpNoOwnerZOrder);
         }
     }
 
@@ -418,15 +369,18 @@ internal sealed class GameOverlayController : IDisposable
 
     public void Dispose()
     {
+        if (_disposed)
+        {
+            return;
+        }
+        _disposed = true;
         _timer.Stop();
         _timer.Dispose();
         _stats.Dispose();
         _menu.Dispose();
         _details.Dispose();
+        GlobalShiftKeyState.Release();
     }
-
-    [DllImport("user32.dll")]
-    private static extern short GetAsyncKeyState(int virtualKey);
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -435,9 +389,6 @@ internal sealed class GameOverlayController : IDisposable
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool IsIconic(nint window);
-
-    [DllImport("user32.dll")]
-    private static extern nint GetWindow(nint window, uint command);
 
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -450,11 +401,6 @@ internal sealed class GameOverlayController : IDisposable
         int height,
         uint flags);
 
-    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
-    private static extern nint GetWindowLongPtr(nint window, int index);
-
-    [DllImport("user32.dll")]
-    private static extern nint GetForegroundWindow();
 }
 
 internal abstract class LayeredOverlayForm : Form
@@ -464,7 +410,11 @@ internal abstract class LayeredOverlayForm : Form
     private const int WsExNoActivate = 0x08000000;
     private const int WsExTransparent = 0x00000020;
     private const int GwlExStyle = -20;
-    private const int GwlpHwndParent = -8;
+    private const uint SwpNoSize = 0x0001;
+    private const uint SwpNoMove = 0x0002;
+    private const uint SwpNoZOrder = 0x0004;
+    private const uint SwpNoActivate = 0x0010;
+    private const uint SwpFrameChanged = 0x0020;
     private const int WmNcHitTest = 0x0084;
     private const int WmNcLButtonDown = 0x00A1;
     private const int WmNcLButtonUp = 0x00A2;
@@ -487,7 +437,6 @@ internal abstract class LayeredOverlayForm : Form
     private OverlayHitTest _manualOperation = OverlayHitTest.Transparent;
     private NativePoint _operationStartCursor;
     private Rectangle _operationStartBounds;
-    private nint _nativeOwner;
 
     protected LayeredOverlayForm(Size initialSize)
     {
@@ -546,19 +495,8 @@ internal abstract class LayeredOverlayForm : Form
         if (!Visible)
         {
             Show();
+            RenderLayer();
         }
-        RenderLayer();
-    }
-
-    public void SetNativeOwner(nint owner)
-    {
-        if (_nativeOwner == owner)
-        {
-            return;
-        }
-
-        _nativeOwner = owner;
-        SetWindowLongPtr(Handle, GwlpHwndParent, owner);
     }
 
     public void SetLayeredBounds(Rectangle bounds)
@@ -566,8 +504,8 @@ internal abstract class LayeredOverlayForm : Form
         if (Bounds != bounds)
         {
             Bounds = bounds;
+            RenderLayer();
         }
-        RenderLayer();
     }
 
     protected void RenderLayer()
@@ -787,7 +725,7 @@ internal abstract class LayeredOverlayForm : Form
             unchecked((short)(((long)value >> 16) & 0xFFFF)));
     }
 
-    private static bool IsShiftPressed() => (GetAsyncKeyState(0x10) & 0x8000) != 0;
+    private static bool IsShiftPressed() => GlobalShiftKeyState.IsPressed;
 
     private void UpdateClickThroughStyle()
     {
@@ -803,6 +741,17 @@ internal abstract class LayeredOverlayForm : Form
         if (updated != current)
         {
             SetWindowLongPtr(Handle, GwlExStyle, new nint(updated));
+            // WS_EX_TRANSPARENT affects hit testing. Force Windows to invalidate
+            // its cached non-client/style state so pressing Shift takes effect
+            // even while a DirectX game owns the foreground input queue.
+            SetWindowPos(
+                Handle,
+                nint.Zero,
+                0,
+                0,
+                0,
+                0,
+                SwpNoSize | SwpNoMove | SwpNoZOrder | SwpNoActivate | SwpFrameChanged);
         }
     }
 
@@ -902,9 +851,6 @@ internal abstract class LayeredOverlayForm : Form
     private static extern bool DeleteObject(nint value);
 
     [DllImport("user32.dll")]
-    private static extern short GetAsyncKeyState(int virtualKey);
-
-    [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetWindowRect(nint window, out NativeRectangle rectangle);
 
@@ -917,6 +863,17 @@ internal abstract class LayeredOverlayForm : Form
 
     [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)]
     private static extern nint SetWindowLongPtr(nint window, int index, nint value);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetWindowPos(
+        nint window,
+        nint insertAfter,
+        int x,
+        int y,
+        int width,
+        int height,
+        uint flags);
 }
 
 internal enum OverlayHitTest
