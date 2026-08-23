@@ -12,7 +12,6 @@ internal sealed class TrackerView : UserControl
     private readonly System.Windows.Forms.Timer _elapsedTimer;
     private readonly Stopwatch _elapsedStopwatch = new();
     private readonly EventSequenceTracker _eventTracker = new();
-    private readonly ChatListMotionDetector _chatMotionDetector = new();
     private readonly ChatFrameMotionDetector _chatFrameMotionDetector = new();
     private readonly MouseWheelMonitor _mouseWheelMonitor = new();
     private readonly ItemIconCatalogService _iconCatalog;
@@ -43,8 +42,7 @@ internal sealed class TrackerView : UserControl
     private bool _monitoring;
     private bool _captureInProgress;
     private bool _primeNextCapture;
-    private long _chatWheelRevision;
-    private DateTime _ignoreChatWheelUntilUtc;
+    private bool _countAllNextCapture;
     private long _totalAdena;
     private long _totalXp;
     private long _totalSp;
@@ -518,8 +516,8 @@ internal sealed class TrackerView : UserControl
         }
 
         _eventTracker.Reset();
-        _chatMotionDetector.Reset();
         _chatFrameMotionDetector.Reset();
+        _countAllNextCapture = false;
         selectedWindow = selectedWindow with { Bounds = windowBounds, IsMinimized = false };
         var relativeRegion = new Rectangle(
             selector.SelectedRegion.X - windowBounds.X,
@@ -628,7 +626,6 @@ internal sealed class TrackerView : UserControl
         }
 
         _captureInProgress = true;
-        var chatWheelRevisionAtCaptureStart = _chatWheelRevision;
         try
         {
             var targetWindow = ScreenCaptureService.ResolveWindow(_settings, _targetWindowHandle);
@@ -661,33 +658,22 @@ internal sealed class TrackerView : UserControl
             var visualVerticalShift = _chatFrameMotionDetector.Observe(screenshot);
             var events = await Task.Run(() => _ocrService.ReadEvents(screenshot));
             events = CanonicalizeForTracking(events);
-            var listMotion = _chatMotionDetector.Observe(events);
-            var chatWheelActive = chatWheelRevisionAtCaptureStart != _chatWheelRevision
-                || DateTime.UtcNow < _ignoreChatWheelUntilUtc;
-            var scrollReplaySuppressed = listMotion == ChatListMotion.ScrollUp
-                || visualVerticalShift > 4
-                || chatWheelActive;
             if (_primeNextCapture)
             {
                 _eventTracker.SetBaselineImmediately(events);
                 _primeNextCapture = false;
+                _countAllNextCapture = false;
                 SetStatus(
                     $"Monitoring is running · baseline captured · recognized lines: {events.Count}",
                     true);
                 return;
             }
 
-
-            if (scrollReplaySuppressed)
-            {
-                _eventTracker.BeginResynchronization();
-                SetStatus(
-                    $"Monitoring is running · chat scroll ignored · recognized lines: {events.Count}",
-                    true);
-                return;
-            }
-
-            foreach (var detectedEvent in _eventTracker.Observe(events, visualVerticalShift))
+            var detectedEvents = _countAllNextCapture
+                ? _eventTracker.AcceptAllAndSetBaseline(events)
+                : _eventTracker.Observe(events, visualVerticalShift);
+            _countAllNextCapture = false;
+            foreach (var detectedEvent in detectedEvents)
             {
                 AddEvent(detectedEvent);
             }
@@ -983,8 +969,8 @@ internal sealed class TrackerView : UserControl
     {
         ArchiveCurrentSession();
         _eventTracker.BeginResynchronization();
-        _chatMotionDetector.Reset();
         _chatFrameMotionDetector.Reset();
+        _countAllNextCapture = false;
         _eventsList.Items.Clear();
         _dropSummaryList.Items.Clear();
         _questSummaryList.Items.Clear();
@@ -1028,8 +1014,9 @@ internal sealed class TrackerView : UserControl
             return;
         }
 
-        _chatWheelRevision++;
-        _ignoreChatWheelUntilUtc = DateTime.UtcNow.AddMilliseconds(1200);
+        // Intentional no-deduplication mode: after a wheel action in the selected
+        // chat, every recognized row visible in the next frame is accepted again.
+        _countAllNextCapture = true;
     }
 
     private void UpdateElapsedTime()

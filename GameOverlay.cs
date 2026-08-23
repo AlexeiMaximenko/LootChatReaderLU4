@@ -18,11 +18,14 @@ internal sealed record OverlaySnapshot(
 internal sealed class GameOverlayController : IDisposable
 {
     private const int Gap = 6;
+    private const uint GwHwndPrev = 3;
     private const uint SwpNoSize = 0x0001;
     private const uint SwpNoMove = 0x0002;
     private const uint SwpNoActivate = 0x0010;
     private const uint SwpNoOwnerZOrder = 0x0200;
+    private static readonly nint HwndTop = nint.Zero;
     private static readonly nint HwndTopmost = new(-1);
+    private static readonly nint HwndNotTopmost = new(-2);
 
     private readonly AppSettings _settings;
     private readonly Func<nint> _targetWindowProvider;
@@ -99,6 +102,12 @@ internal sealed class GameOverlayController : IDisposable
         $"stats={_stats.Bounds} client={_stats.ClientSize} visible={_stats.Visible}; " +
         $"details={_details.Bounds} client={_details.ClientSize} visible={_details.Visible}";
 
+    internal (nint Owner, bool Topmost) GetZOrderDiagnostic() =>
+        (_stats.NativeOwner, _stats.IsNativeTopmost);
+
+    internal void ApplyZOrderForDiagnostic(nint targetWindow, bool targetIsForeground) =>
+        PlaceDirectlyAboveTarget(targetWindow, targetIsForeground);
+
     private void ToggleMenu()
     {
         _menuVisible = !_menuVisible;
@@ -161,6 +170,10 @@ internal sealed class GameOverlayController : IDisposable
         _stats.InteractionEnabled = shiftPressed;
         _menu.InteractionEnabled = shiftPressed;
         _details.InteractionEnabled = shiftPressed;
+        foreach (var window in new LayeredOverlayForm[] { _stats, _menu, _details })
+        {
+            window.SetNativeOwner(targetWindow);
+        }
 
         var horizontalStats = placement is OverlayPlacement.Top or OverlayPlacement.Bottom;
         _stats.SetHorizontal(horizontalStats);
@@ -222,25 +235,64 @@ internal sealed class GameOverlayController : IDisposable
         PlaceDirectlyAboveTarget(targetWindow);
     }
 
-    private void PlaceDirectlyAboveTarget(nint _)
+    private void PlaceDirectlyAboveTarget(nint targetWindow, bool? foregroundOverride = null)
     {
-        // Keep the independent overlay windows in one stable Z-order regardless
-        // of whether the game or this application is currently active. They are
-        // hidden separately whenever the selected game window is unavailable or
-        // minimized.
+        var targetIsForeground = foregroundOverride ?? GetForegroundWindow() == targetWindow;
+        if (targetIsForeground)
+        {
+            foreach (var window in new LayeredOverlayForm[] { _stats, _menu, _details })
+            {
+                if (window.Visible && window.IsHandleCreated)
+                {
+                    SetWindowPos(
+                        window.Handle,
+                        HwndTopmost,
+                        0,
+                        0,
+                        0,
+                        0,
+                        SwpNoSize | SwpNoMove | SwpNoActivate | SwpNoOwnerZOrder);
+                }
+            }
+            return;
+        }
+
+        var overlayHandles = new HashSet<nint>
+        {
+            _stats.IsHandleCreated ? _stats.Handle : nint.Zero,
+            _menu.IsHandleCreated ? _menu.Handle : nint.Zero,
+            _details.IsHandleCreated ? _details.Handle : nint.Zero
+        };
+        var insertAfter = GetWindow(targetWindow, GwHwndPrev);
+        while (insertAfter != nint.Zero && overlayHandles.Contains(insertAfter))
+        {
+            insertAfter = GetWindow(insertAfter, GwHwndPrev);
+        }
+
+        var zOrderAnchor = insertAfter == nint.Zero ? HwndTop : insertAfter;
         foreach (var window in new LayeredOverlayForm[] { _stats, _menu, _details })
         {
-            if (window.Visible && window.IsHandleCreated)
+            if (!window.Visible || !window.IsHandleCreated)
             {
-                SetWindowPos(
-                    window.Handle,
-                    HwndTopmost,
-                    0,
-                    0,
-                    0,
-                    0,
-                    SwpNoSize | SwpNoMove | SwpNoActivate | SwpNoOwnerZOrder);
+                continue;
             }
+
+            SetWindowPos(
+                window.Handle,
+                HwndNotTopmost,
+                0,
+                0,
+                0,
+                0,
+                SwpNoSize | SwpNoMove | SwpNoActivate | SwpNoOwnerZOrder);
+            SetWindowPos(
+                window.Handle,
+                zOrderAnchor,
+                0,
+                0,
+                0,
+                0,
+                SwpNoSize | SwpNoMove | SwpNoActivate | SwpNoOwnerZOrder);
         }
     }
 
@@ -390,6 +442,12 @@ internal sealed class GameOverlayController : IDisposable
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool IsIconic(nint window);
 
+    [DllImport("user32.dll")]
+    private static extern nint GetWindow(nint window, uint command);
+
+    [DllImport("user32.dll")]
+    private static extern nint GetForegroundWindow();
+
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetWindowPos(
@@ -410,6 +468,7 @@ internal abstract class LayeredOverlayForm : Form
     private const int WsExNoActivate = 0x08000000;
     private const int WsExTransparent = 0x00000020;
     private const int GwlExStyle = -20;
+    private const int GwlpHwndParent = -8;
     private const uint SwpNoSize = 0x0001;
     private const uint SwpNoMove = 0x0002;
     private const uint SwpNoZOrder = 0x0004;
@@ -437,6 +496,7 @@ internal abstract class LayeredOverlayForm : Form
     private OverlayHitTest _manualOperation = OverlayHitTest.Transparent;
     private NativePoint _operationStartCursor;
     private Rectangle _operationStartBounds;
+    private nint _nativeOwner;
 
     protected LayeredOverlayForm(Size initialSize)
     {
@@ -468,6 +528,11 @@ internal abstract class LayeredOverlayForm : Form
 
     public bool IsInSizeMove { get; private set; }
 
+    internal nint NativeOwner => GetWindowLongPtr(Handle, GwlpHwndParent);
+
+    internal bool IsNativeTopmost =>
+        (GetWindowLongPtr(Handle, GwlExStyle).ToInt64() & 0x00000008) != 0;
+
     protected override bool ShowWithoutActivation => true;
 
     protected override CreateParams CreateParams
@@ -497,6 +562,17 @@ internal abstract class LayeredOverlayForm : Form
             Show();
             RenderLayer();
         }
+    }
+
+    public void SetNativeOwner(nint owner)
+    {
+        if (_nativeOwner == owner)
+        {
+            return;
+        }
+
+        _nativeOwner = owner;
+        SetWindowLongPtr(Handle, GwlpHwndParent, owner);
     }
 
     public void SetLayeredBounds(Rectangle bounds)

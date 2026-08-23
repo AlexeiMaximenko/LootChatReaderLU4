@@ -44,6 +44,12 @@ internal static class Program
             return;
         }
 
+        if (args.Length >= 1 && args[0].Equals("--overlay-isolation-test", StringComparison.OrdinalIgnoreCase))
+        {
+            RunOverlayIsolationTest();
+            return;
+        }
+
         if (args.Length >= 2 && args[0].Equals("--overlay-render-test", StringComparison.OrdinalIgnoreCase))
         {
             var options = args.Skip(2).ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -353,6 +359,77 @@ internal static class Program
         }
 
         Console.WriteLine("OVERLAY: default off; click-through without Shift; capture-matched main panel; movable/resizable details");
+    }
+
+    private static void RunOverlayIsolationTest()
+    {
+        using var firstTarget = new Form
+        {
+            Text = "First game diagnostic",
+            StartPosition = FormStartPosition.Manual,
+            Bounds = new Rectangle(80, 80, 520, 420),
+            ShowInTaskbar = false
+        };
+        using var secondTarget = new Form
+        {
+            Text = "Second game diagnostic",
+            StartPosition = FormStartPosition.Manual,
+            Bounds = new Rectangle(640, 80, 520, 420),
+            ShowInTaskbar = false
+        };
+        var firstHandle = firstTarget.Handle;
+        var secondHandle = secondTarget.Handle;
+        static AppSettings Settings() => new()
+        {
+            CaptureX = 40,
+            CaptureY = 100,
+            CaptureWidth = 300,
+            CaptureHeight = 150,
+            ReferenceWindowWidth = 520,
+            ReferenceWindowHeight = 420,
+            TargetProcessName = "diagnostic",
+            OverlayPlacement = OverlayPlacement.Right
+        };
+        using var firstOverlay = new GameOverlayController(Settings(), () => firstHandle, () => { });
+        using var secondOverlay = new GameOverlayController(Settings(), () => secondHandle, () => { });
+        if (!GlobalShiftKeyState.RawInputAvailable)
+        {
+            throw new InvalidOperationException("Raw keyboard input could not be registered.");
+        }
+        firstTarget.Show();
+        secondTarget.Show();
+        firstTarget.Activate();
+        firstTarget.BringToFront();
+
+        Exception? failure = null;
+        var timer = new System.Windows.Forms.Timer { Interval = 350 };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            firstOverlay.ApplyZOrderForDiagnostic(firstHandle, true);
+            secondOverlay.ApplyZOrderForDiagnostic(secondHandle, false);
+            var first = firstOverlay.GetZOrderDiagnostic();
+            var second = secondOverlay.GetZOrderDiagnostic();
+            if (first.Owner != firstHandle
+                || second.Owner != secondHandle
+                || !first.Topmost
+                || second.Topmost)
+            {
+                failure = new InvalidOperationException(
+                    $"Overlay isolation failed: first owner=0x{first.Owner:X} topmost={first.Topmost}; " +
+                    $"second owner=0x{second.Owner:X} topmost={second.Topmost}.");
+            }
+            firstTarget.Close();
+        };
+        timer.Start();
+        Application.Run(firstTarget);
+        timer.Dispose();
+        secondTarget.Close();
+        if (failure is not null)
+        {
+            throw failure;
+        }
+        Console.WriteLine("OVERLAY ISOLATION: foreground overlay topmost; inactive overlay bound only to its owner");
     }
 
     private static void RunOverlayRenderTest(
@@ -697,6 +774,16 @@ internal static class Program
 
         tracker.SetBaselineImmediately(Array.Empty<DetectedEvent>());
         RequireCount("first event after empty baseline", tracker.Observe(new[] { E("C") }), 1);
+
+        tracker.SetBaselineImmediately(new[] { E("A"), E("B") });
+        RequireCount(
+            "wheel replay accepts every visible row once",
+            tracker.AcceptAllAndSetBaseline(new[] { E("A"), E("B") }),
+            2);
+        RequireCount(
+            "wheel replay frame is not repeated while stationary",
+            tracker.Observe(new[] { E("A"), E("B") }),
+            0);
 
         static DetectedEvent Positioned(string value, int top) => new(
             DetectedEventKind.Drop, value, value, top, value, 1, 0, 0, 0);

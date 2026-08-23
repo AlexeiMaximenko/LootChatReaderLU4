@@ -22,11 +22,16 @@ internal static class GlobalShiftKeyState
     private static nint _hookHandle;
     private static int _references;
     private static volatile bool _hookShiftPressed;
+    private static volatile bool _rawShiftPressed;
+    private static RawInputShiftWindow? _rawInputWindow;
 
-    public static bool IsPressed => _hookShiftPressed
+    public static bool IsPressed => _rawShiftPressed
+        || _hookShiftPressed
         || (GetAsyncKeyState(VkShift) & 0x8000) != 0
         || (GetAsyncKeyState(VkLeftShift) & 0x8000) != 0
         || (GetAsyncKeyState(VkRightShift) & 0x8000) != 0;
+
+    internal static bool RawInputAvailable => _rawInputWindow is not null;
 
     public static void AddReference()
     {
@@ -37,6 +42,7 @@ internal static class GlobalShiftKeyState
             {
                 _hookHandle = SetWindowsHookEx(WhKeyboardLl, Hook, GetModuleHandle(null), 0);
             }
+            _rawInputWindow ??= RawInputShiftWindow.TryCreate();
         }
     }
 
@@ -45,14 +51,20 @@ internal static class GlobalShiftKeyState
         lock (Sync)
         {
             _references = Math.Max(0, _references - 1);
-            if (_references != 0 || _hookHandle == nint.Zero)
+            if (_references != 0)
             {
                 return;
             }
 
-            UnhookWindowsHookEx(_hookHandle);
+            if (_hookHandle != nint.Zero)
+            {
+                UnhookWindowsHookEx(_hookHandle);
+            }
             _hookHandle = nint.Zero;
             _hookShiftPressed = false;
+            _rawShiftPressed = false;
+            _rawInputWindow?.Dispose();
+            _rawInputWindow = null;
         }
     }
 
@@ -108,4 +120,145 @@ internal static class GlobalShiftKeyState
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     private static extern nint GetModuleHandle(string? moduleName);
+
+    private sealed class RawInputShiftWindow : NativeWindow, IDisposable
+    {
+        private const int WmInput = 0x00FF;
+        private const uint RidInput = 0x10000003;
+        private const uint RimTypeKeyboard = 1;
+        private const uint RidevInputSink = 0x00000100;
+        private const ushort UsagePageGenericDesktop = 0x01;
+        private const ushort UsageKeyboard = 0x06;
+        private const ushort RiKeyBreak = 0x0001;
+        private static readonly nint HwndMessage = new(-3);
+
+        private RawInputShiftWindow()
+        {
+            CreateHandle(new CreateParams
+            {
+                Caption = "LU4 Loot Chat Reader Raw Input",
+                Parent = HwndMessage
+            });
+            var device = new RawInputDevice
+            {
+                UsagePage = UsagePageGenericDesktop,
+                Usage = UsageKeyboard,
+                Flags = RidevInputSink,
+                Target = Handle
+            };
+            if (!RegisterRawInputDevices(
+                    [device],
+                    1,
+                    (uint)Marshal.SizeOf<RawInputDevice>()))
+            {
+                throw new InvalidOperationException("Raw keyboard input registration failed.");
+            }
+        }
+
+        public static RawInputShiftWindow? TryCreate()
+        {
+            try
+            {
+                return new RawInputShiftWindow();
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        protected override void WndProc(ref Message message)
+        {
+            if (message.Msg == WmInput)
+            {
+                ReadKeyboardInput(message.LParam);
+            }
+            base.WndProc(ref message);
+        }
+
+        private static void ReadKeyboardInput(nint rawInputHandle)
+        {
+            var headerSize = (uint)Marshal.SizeOf<RawInputHeader>();
+            uint dataSize = 0;
+            if (GetRawInputData(rawInputHandle, RidInput, nint.Zero, ref dataSize, headerSize) != 0
+                || dataSize < headerSize)
+            {
+                return;
+            }
+
+            var buffer = Marshal.AllocHGlobal((int)dataSize);
+            try
+            {
+                if (GetRawInputData(rawInputHandle, RidInput, buffer, ref dataSize, headerSize) != dataSize)
+                {
+                    return;
+                }
+
+                var header = Marshal.PtrToStructure<RawInputHeader>(buffer);
+                if (header.Type != RimTypeKeyboard)
+                {
+                    return;
+                }
+
+                var keyboard = Marshal.PtrToStructure<RawKeyboard>(buffer + (int)headerSize);
+                if (keyboard.VirtualKey is VkShift or VkLeftShift or VkRightShift)
+                {
+                    _rawShiftPressed = (keyboard.Flags & RiKeyBreak) == 0;
+                }
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+        }
+
+        public void Dispose()
+        {
+            DestroyHandle();
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct RawInputDevice
+        {
+            public ushort UsagePage;
+            public ushort Usage;
+            public uint Flags;
+            public nint Target;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct RawInputHeader
+        {
+            public uint Type;
+            public uint Size;
+            public nint Device;
+            public nint WParam;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct RawKeyboard
+        {
+            public ushort MakeCode;
+            public ushort Flags;
+            public ushort Reserved;
+            public ushort VirtualKey;
+            public uint Message;
+            public uint ExtraInformation;
+        }
+
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool RegisterRawInputDevices(
+            [In] RawInputDevice[] devices,
+            uint deviceCount,
+            uint deviceSize);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern uint GetRawInputData(
+            nint rawInput,
+            uint command,
+            nint data,
+            ref uint size,
+            uint headerSize);
+    }
 }

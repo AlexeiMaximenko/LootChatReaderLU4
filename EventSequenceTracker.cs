@@ -13,12 +13,6 @@ internal sealed class EventSequenceTracker
         IReadOnlyList<DetectedEvent> current,
         int visualVerticalShift = 0)
     {
-        if (current.Count == 0 && !_needsBaseline)
-        {
-            // A transient empty OCR result cannot prove that the visible list changed.
-            return Array.Empty<DetectedEvent>();
-        }
-
         if (_needsBaseline)
         {
             if (!SequencesEqual(_candidate, current))
@@ -39,31 +33,24 @@ internal sealed class EventSequenceTracker
             return Array.Empty<DetectedEvent>();
         }
 
-        if (visualVerticalShift < -4)
-        {
-            var newAfterMovement = FindUnmatchedAfterMovement(
-                _baseline,
-                current,
-                visualVerticalShift);
-            _baseline = current.ToArray();
-            _candidate = current.ToArray();
-            _candidateFrames = 1;
-            return newAfterMovement;
-        }
-
-        if (SequencesEqual(_baseline, current))
-        {
-            return Array.Empty<DetectedEvent>();
-        }
-
-        // During normal monitoring an event is accepted from the first readable
-        // frame. Waiting for the entire viewport to repeat loses short-lived rows
-        // when combat messages move the chat several times per second.
-        var newSuffixStart = FindNewSuffixStart(_baseline, current);
+        // Deliberately compare only with the immediately preceding OCR frame.
+        // There is no session-level replay suppression: rows exposed again by a
+        // scroll are allowed to count again. The visual shift only maps instances
+        // that remained visible from one frame to the next.
+        var newEvents = FindUnmatchedAfterMovement(
+            _baseline,
+            current,
+            Math.Abs(visualVerticalShift) > 4 ? visualVerticalShift : 0);
         _baseline = current.ToArray();
         _candidate = current.ToArray();
         _candidateFrames = 1;
-        return current.Skip(newSuffixStart).ToArray();
+        return newEvents;
+    }
+
+    public IReadOnlyList<DetectedEvent> AcceptAllAndSetBaseline(IReadOnlyList<DetectedEvent> current)
+    {
+        SetBaselineImmediately(current);
+        return current.ToArray();
     }
 
     private static IReadOnlyList<DetectedEvent> FindUnmatchedAfterMovement(
@@ -124,53 +111,6 @@ internal sealed class EventSequenceTracker
     {
         _baseline = Array.Empty<DetectedEvent>();
         BeginResynchronization();
-    }
-
-    private static int FindNewSuffixStart(
-        IReadOnlyList<DetectedEvent> previous,
-        IReadOnlyList<DetectedEvent> current)
-    {
-        if (previous.Count == 0)
-        {
-            return 0;
-        }
-
-        var lengths = new int[previous.Count + 1, current.Count + 1];
-        for (var previousIndex = previous.Count - 1; previousIndex >= 0; previousIndex--)
-        {
-            for (var currentIndex = current.Count - 1; currentIndex >= 0; currentIndex--)
-            {
-                lengths[previousIndex, currentIndex] =
-                    previous[previousIndex].Identity == current[currentIndex].Identity
-                        ? lengths[previousIndex + 1, currentIndex + 1] + 1
-                        : Math.Max(lengths[previousIndex + 1, currentIndex], lengths[previousIndex, currentIndex + 1]);
-            }
-        }
-
-        var lastMatchedCurrentIndex = -1;
-        var i = 0;
-        var j = 0;
-        while (i < previous.Count && j < current.Count)
-        {
-            if (previous[i].Identity == current[j].Identity)
-            {
-                lastMatchedCurrentIndex = j;
-                i++;
-                j++;
-            }
-            else if (lengths[i + 1, j] >= lengths[i, j + 1])
-            {
-                i++;
-            }
-            else
-            {
-                j++;
-            }
-        }
-
-        // OCR recovery may insert a previously missed row between known rows. Only
-        // the suffix after the last known anchor can represent newly appended chat.
-        return lastMatchedCurrentIndex + 1;
     }
 
     private static bool SequencesEqual(
