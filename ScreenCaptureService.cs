@@ -74,12 +74,21 @@ internal static class ScreenCaptureService
 
         var windows = EnumerateWindows();
         return windows
-            .Where(window => window.ProcessName.Equals(settings.TargetProcessName, StringComparison.OrdinalIgnoreCase))
+            .Where(window => MatchesCaptureTarget(settings, window))
             .OrderByDescending(window => settings.TargetWindowClass.Length > 0
                 && window.ClassName.Equals(settings.TargetWindowClass, StringComparison.Ordinal))
-            .ThenByDescending(window => settings.TargetWindowTitle.Length > 0
-                && window.Title.Equals(settings.TargetWindowTitle, StringComparison.Ordinal))
             .FirstOrDefault();
+    }
+
+    internal static bool MatchesCaptureTarget(AppSettings settings, WindowDescriptor window)
+    {
+        // The process name is shared by every LU4 client. The window title carries
+        // the character name and is therefore the persistent identity of a tracker
+        // across client restarts. Never fall back to another lu4 process/title.
+        return settings.TargetProcessName.Length > 0
+            && settings.TargetWindowTitle.Length > 0
+            && window.ProcessName.Equals(settings.TargetProcessName, StringComparison.OrdinalIgnoreCase)
+            && window.Title.Equals(settings.TargetWindowTitle, StringComparison.Ordinal);
     }
 
     public static Bitmap CaptureWindowRegion(
@@ -159,6 +168,13 @@ internal static class ScreenCaptureService
             return false;
         }
 
+        var title = ReadWindowText(handle);
+        if (settings.TargetWindowTitle.Length == 0
+            || !title.Equals(settings.TargetWindowTitle, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
         if (!TryGetWindowBounds(handle, out var bounds))
         {
             bounds = new Rectangle(
@@ -172,7 +188,7 @@ internal static class ScreenCaptureService
             handle,
             processId,
             processName,
-            ReadWindowText(handle),
+            title,
             ReadClassName(handle),
             bounds,
             isMinimized);

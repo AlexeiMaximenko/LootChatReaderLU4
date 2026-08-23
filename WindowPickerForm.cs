@@ -8,7 +8,7 @@ internal sealed class WindowPickerForm : Form
 
     public WindowDescriptor? SelectedWindow { get; private set; }
 
-    public WindowPickerForm(string preferredProcessName)
+    public WindowPickerForm(string preferredProcessName, string preferredWindowTitle)
     {
         Text = "Select Game Window";
         StartPosition = FormStartPosition.CenterParent;
@@ -44,7 +44,7 @@ internal sealed class WindowPickerForm : Form
         var cancelButton = new Button { Text = "Cancel", AutoSize = true };
         cancelButton.Click += (_, _) => DialogResult = DialogResult.Cancel;
         var refreshButton = new Button { Text = "Refresh", AutoSize = true };
-        refreshButton.Click += (_, _) => RefreshWindows(preferredProcessName);
+        refreshButton.Click += (_, _) => RefreshWindows(preferredProcessName, preferredWindowTitle);
         buttons.Controls.Add(_selectButton);
         buttons.Controls.Add(cancelButton);
         buttons.Controls.Add(refreshButton);
@@ -54,10 +54,10 @@ internal sealed class WindowPickerForm : Form
         Controls.Add(instruction);
         AcceptButton = _selectButton;
         CancelButton = cancelButton;
-        Shown += (_, _) => RefreshWindows(preferredProcessName);
+        Shown += (_, _) => RefreshWindows(preferredProcessName, preferredWindowTitle);
     }
 
-    private void RefreshWindows(string preferredProcessName)
+    private void RefreshWindows(string preferredProcessName, string preferredWindowTitle)
     {
         _windows = ScreenCaptureService.EnumerateWindows();
         _windowsList.BeginUpdate();
@@ -70,9 +70,10 @@ internal sealed class WindowPickerForm : Form
 
         var preferredIndex = _windows
             .Select((window, index) => new { window, index })
-            .Where(item => item.window.ProcessName.Contains("lu4", StringComparison.OrdinalIgnoreCase)
-                || (preferredProcessName.Length > 0
-                    && item.window.ProcessName.Equals(preferredProcessName, StringComparison.OrdinalIgnoreCase)))
+            .OrderByDescending(item => preferredWindowTitle.Length > 0
+                && item.window.Title.Equals(preferredWindowTitle, StringComparison.Ordinal)
+                && item.window.ProcessName.Equals(preferredProcessName, StringComparison.OrdinalIgnoreCase))
+            .ThenByDescending(item => item.window.ProcessName.Contains("lu4", StringComparison.OrdinalIgnoreCase))
             .Select(item => item.index)
             .FirstOrDefault(-1);
         if (_windows.Count > 0)

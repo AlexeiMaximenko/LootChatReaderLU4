@@ -50,7 +50,8 @@ internal sealed class AppSettings
         && CaptureHeight >= 30
         && ReferenceWindowWidth > 0
         && ReferenceWindowHeight > 0
-        && TargetProcessName.Length > 0;
+        && TargetProcessName.Length > 0
+        && TargetWindowTitle.Length > 0;
 
     public void SetCaptureTarget(WindowDescriptor window, Rectangle relativeRegion)
     {

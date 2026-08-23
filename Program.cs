@@ -93,6 +93,12 @@ internal static class Program
             return;
         }
 
+        if (args.Length >= 1 && args[0].Equals("--window-binding-test", StringComparison.OrdinalIgnoreCase))
+        {
+            RunWindowBindingTest();
+            return;
+        }
+
         if (args.Length >= 1 && args[0].Equals("--catalog-resolve-test", StringComparison.OrdinalIgnoreCase))
         {
             RunCatalogResolveTest();
@@ -716,6 +722,7 @@ internal static class Program
         var settings = new AppSettings
         {
             TargetProcessName = process.ProcessName,
+            TargetWindowTitle = target.Text,
             ReferenceWindowWidth = target.Width,
             ReferenceWindowHeight = target.Height
         };
@@ -745,6 +752,42 @@ internal static class Program
 
         target.Close();
         Console.WriteLine("WINDOW UNAVAILABLE: minimized handle retained; capture paused without a fatal error");
+    }
+
+    private static void RunWindowBindingTest()
+    {
+        var settings = new AppSettings
+        {
+            TargetProcessName = "lu4",
+            TargetWindowTitle = "LU4 - Kelias - lu4.bin"
+        };
+        var kelias = new WindowDescriptor(
+            (nint)1,
+            100,
+            "lu4",
+            "LU4 - Kelias - lu4.bin",
+            "LU4Window",
+            new Rectangle(0, 0, 1280, 720),
+            false);
+        var keliasSpoil = kelias with
+        {
+            Handle = (nint)2,
+            ProcessId = 101,
+            Title = "LU4 - KeliasSpoil - lu4.bin"
+        };
+        if (!ScreenCaptureService.MatchesCaptureTarget(settings, kelias)
+            || ScreenCaptureService.MatchesCaptureTarget(settings, keliasSpoil))
+        {
+            throw new InvalidOperationException("A tracker was not bound to its exact LU4 character title.");
+        }
+
+        settings.TargetWindowTitle = string.Empty;
+        if (ScreenCaptureService.MatchesCaptureTarget(settings, kelias))
+        {
+            throw new InvalidOperationException("A legacy process-only target was allowed to bind ambiguously.");
+        }
+
+        Console.WriteLine("WINDOW BINDING: exact Kelias title accepted; KeliasSpoil and process-only fallback rejected");
     }
 
     [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]

@@ -478,7 +478,7 @@ internal sealed class TrackerView : UserControl
         {
             MessageBox.Show(
                 this,
-                $"The selected game window ({_settings.TargetProcessName}) is not running.",
+                $"The selected character window ({_settings.TargetWindowTitle}) is not running.",
                 "Overlay Area",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
@@ -535,7 +535,9 @@ internal sealed class TrackerView : UserControl
 
     private async void SelectRegionButtonOnClick(object? sender, EventArgs e)
     {
-        using var windowPicker = new WindowPickerForm(_settings.TargetProcessName);
+        using var windowPicker = new WindowPickerForm(
+            _settings.TargetProcessName,
+            _settings.TargetWindowTitle);
         if (windowPicker.ShowDialog(this) != DialogResult.OK || windowPicker.SelectedWindow is null)
         {
             return;
@@ -561,7 +563,7 @@ internal sealed class TrackerView : UserControl
 
         var initialScreenRegion = Rectangle.Empty;
         if (_settings.HasCaptureRegion
-            && selectedWindow.ProcessName.Equals(_settings.TargetProcessName, StringComparison.OrdinalIgnoreCase))
+            && ScreenCaptureService.MatchesCaptureTarget(_settings, selectedWindow))
         {
             initialScreenRegion = ScreenCaptureService.GetScreenRegion(
                 selectedWindow.Handle,
@@ -624,7 +626,7 @@ internal sealed class TrackerView : UserControl
         {
             MessageBox.Show(
                 this,
-                $"The selected game window ({_settings.TargetProcessName}) is not running.",
+                $"The selected character window ({_settings.TargetWindowTitle}) is not running.",
                 "Game Window Not Found",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
@@ -1142,7 +1144,7 @@ internal sealed class TrackerView : UserControl
             ? "off"
             : _settings.OverlayPlacement.ToString().ToLowerInvariant();
         _regionLabel.Text = _settings.HasCaptureRegion
-            ? $"Window: {_settings.TargetProcessName} · area: {_settings.CaptureWidth}×{_settings.CaptureHeight} · stats overlay: {statsOverlay}"
+            ? $"Window: {_settings.TargetWindowTitle} · area: {_settings.CaptureWidth}×{_settings.CaptureHeight} · stats overlay: {statsOverlay}"
             : $"Window and area not selected · stats overlay: {statsOverlay}";
     }
 
