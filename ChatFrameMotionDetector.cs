@@ -13,9 +13,9 @@ internal sealed class ChatFrameMotionDetector
 {
     private const int MaximumShift = 96;
     private const int MinimumMovement = 4;
-    private const int MinimumIntersection = 24;
-    private const double MinimumScore = 0.30;
-    private const double MinimumImprovementOverStationary = 0.03;
+    private const int MinimumIntersection = 36;
+    private const double MinimumScore = 0.45;
+    private const double MinimumImprovementOverStationary = 0.06;
 
     private byte[]? _previousMask;
     private int _width;

@@ -13,6 +13,7 @@ internal sealed class TrackerView : UserControl
     private readonly Stopwatch _elapsedStopwatch = new();
     private readonly EventSequenceTracker _eventTracker = new();
     private readonly ChatFrameMotionDetector _chatFrameMotionDetector = new();
+    private readonly ChatListMotionDetector _chatListMotionDetector = new();
     private readonly MouseWheelMonitor _mouseWheelMonitor = new();
     private readonly ItemIconCatalogService _iconCatalog;
     private readonly ImageList _itemImages = new();
@@ -44,7 +45,7 @@ internal sealed class TrackerView : UserControl
     private bool _monitoring;
     private bool _captureInProgress;
     private bool _primeNextCapture;
-    private bool _countAllNextCapture;
+    private int _wheelSuppressionFrames;
     private long _totalAdena;
     private long _totalXp;
     private long _totalSp;
@@ -62,7 +63,7 @@ internal sealed class TrackerView : UserControl
         _settings = profile.Settings;
         _iconCatalog = iconCatalog;
         _saveWorkspace = saveWorkspace;
-        _captureTimer = new System.Windows.Forms.Timer { Interval = 200 };
+        _captureTimer = new System.Windows.Forms.Timer { Interval = 100 };
         _captureTimer.Tick += CaptureTimerOnTick;
         _elapsedTimer = new System.Windows.Forms.Timer { Interval = 1000 };
         _elapsedTimer.Tick += (_, _) => UpdateElapsedTime();
@@ -580,7 +581,8 @@ internal sealed class TrackerView : UserControl
 
         _eventTracker.Reset();
         _chatFrameMotionDetector.Reset();
-        _countAllNextCapture = false;
+        _chatListMotionDetector.Reset();
+        _wheelSuppressionFrames = 0;
         selectedWindow = selectedWindow with { Bounds = windowBounds, IsMinimized = false };
         var relativeRegion = new Rectangle(
             selector.SelectedRegion.X - windowBounds.X,
@@ -647,6 +649,9 @@ internal sealed class TrackerView : UserControl
         _sessionStartedAt ??= DateTime.Now;
         // Starting or resuming must never replay rows already visible in the chat.
         _primeNextCapture = true;
+        _wheelSuppressionFrames = 0;
+        _chatFrameMotionDetector.Reset();
+        _chatListMotionDetector.Reset();
         _elapsedStopwatch.Start();
         _elapsedTimer.Start();
         UpdateElapsedTime();
@@ -696,6 +701,7 @@ internal sealed class TrackerView : UserControl
             {
                 _eventTracker.BeginResynchronization();
                 _chatFrameMotionDetector.Reset();
+                _chatListMotionDetector.Reset();
                 SetStatus("Monitoring is running · OCR paused: game window unavailable.", true);
                 return;
             }
@@ -704,6 +710,7 @@ internal sealed class TrackerView : UserControl
             {
                 _eventTracker.BeginResynchronization();
                 _chatFrameMotionDetector.Reset();
+                _chatListMotionDetector.Reset();
                 SetStatus("Monitoring is running · OCR paused while the game window is minimized.", true);
                 return;
             }
@@ -721,21 +728,32 @@ internal sealed class TrackerView : UserControl
             var visualVerticalShift = _chatFrameMotionDetector.Observe(screenshot);
             var events = await Task.Run(() => _ocrService.ReadEvents(screenshot));
             events = CanonicalizeForTracking(events);
+            var recognizedLineMotion = _chatListMotionDetector.Observe(events);
             if (_primeNextCapture)
             {
                 _eventTracker.SetBaselineImmediately(events);
                 _primeNextCapture = false;
-                _countAllNextCapture = false;
                 SetStatus(
                     $"Monitoring is running · baseline captured · recognized lines: {events.Count}",
                     true);
                 return;
             }
 
-            var detectedEvents = _countAllNextCapture
-                ? _eventTracker.AcceptAllAndSetBaseline(events)
-                : _eventTracker.Observe(events, visualVerticalShift);
-            _countAllNextCapture = false;
+            if (_wheelSuppressionFrames > 0)
+            {
+                _wheelSuppressionFrames--;
+                _eventTracker.SetBaselineImmediately(events);
+                SetStatus(
+                    $"Monitoring is running · chat scroll resynchronization · recognized lines: {events.Count}",
+                    true);
+                return;
+            }
+
+            var detectedEvents = _eventTracker.Observe(
+                events,
+                visualVerticalShift,
+                recognizedLineMotion,
+                _chatFrameMotionDetector.LastConfidence);
             foreach (var detectedEvent in detectedEvents)
             {
                 AddEvent(detectedEvent);
@@ -747,6 +765,7 @@ internal sealed class TrackerView : UserControl
         {
             _eventTracker.BeginResynchronization();
             _chatFrameMotionDetector.Reset();
+            _chatListMotionDetector.Reset();
             SetStatus($"Monitoring is running · OCR paused: {exception.Message}", true);
         }
         catch (Exception exception)
@@ -1033,7 +1052,8 @@ internal sealed class TrackerView : UserControl
         ArchiveCurrentSession();
         _eventTracker.BeginResynchronization();
         _chatFrameMotionDetector.Reset();
-        _countAllNextCapture = false;
+        _chatListMotionDetector.Reset();
+        _wheelSuppressionFrames = 0;
         _eventsList.Items.Clear();
         _dropSummaryList.Items.Clear();
         _questSummaryList.Items.Clear();
@@ -1077,9 +1097,14 @@ internal sealed class TrackerView : UserControl
             return;
         }
 
-        // Intentional no-deduplication mode: after a wheel action in the selected
-        // chat, every recognized row visible in the next frame is accepted again.
-        _countAllNextCapture = true;
+        // Manual history scrolling can move old rows in the same direction as a
+        // real chat update. Rebuild the baseline for one second instead of ever
+        // treating those exposed rows as fresh loot.
+        _wheelSuppressionFrames = 5;
+        _primeNextCapture = true;
+        _eventTracker.BeginResynchronization();
+        _chatFrameMotionDetector.Reset();
+        _chatListMotionDetector.Reset();
     }
 
     private void UpdateElapsedTime()

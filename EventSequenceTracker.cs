@@ -11,7 +11,9 @@ internal sealed class EventSequenceTracker
 
     public IReadOnlyList<DetectedEvent> Observe(
         IReadOnlyList<DetectedEvent> current,
-        int visualVerticalShift = 0)
+        int visualVerticalShift = 0,
+        ChatListMotion recognizedLineMotion = ChatListMotion.Unknown,
+        double visualConfidence = 0)
     {
         if (_needsBaseline)
         {
@@ -33,24 +35,33 @@ internal sealed class EventSequenceTracker
             return Array.Empty<DetectedEvent>();
         }
 
-        // Deliberately compare only with the immediately preceding OCR frame.
-        // There is no session-level replay suppression: rows exposed again by a
-        // scroll are allowed to count again. The visual shift only maps instances
-        // that remained visible from one frame to the next.
+        // A new OCR interpretation is not an event by itself. Background motion,
+        // spell effects and antialiasing can change OCR while every chat row stays
+        // in place. Accept rows only when the text layer is coherently advancing
+        // upward. A stationary or downward-moving recognized anchor vetoes a
+        // visual false positive. If OCR has no reusable anchor, require a strong
+        // visual match before trusting the shift.
+        var chatAdvancedUp = visualVerticalShift <= -4
+            && recognizedLineMotion != ChatListMotion.ScrollUp
+            && recognizedLineMotion != ChatListMotion.Stationary
+            && (recognizedLineMotion == ChatListMotion.ScrollDown
+                || visualConfidence >= 0.58);
+        if (!chatAdvancedUp)
+        {
+            _baseline = current.ToArray();
+            _candidate = current.ToArray();
+            _candidateFrames = 1;
+            return Array.Empty<DetectedEvent>();
+        }
+
         var newEvents = FindUnmatchedAfterMovement(
             _baseline,
             current,
-            Math.Abs(visualVerticalShift) > 4 ? visualVerticalShift : 0);
+            visualVerticalShift);
         _baseline = current.ToArray();
         _candidate = current.ToArray();
         _candidateFrames = 1;
         return newEvents;
-    }
-
-    public IReadOnlyList<DetectedEvent> AcceptAllAndSetBaseline(IReadOnlyList<DetectedEvent> current)
-    {
-        SetBaselineImmediately(current);
-        return current.ToArray();
     }
 
     private static IReadOnlyList<DetectedEvent> FindUnmatchedAfterMovement(

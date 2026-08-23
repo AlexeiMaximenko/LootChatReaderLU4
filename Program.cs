@@ -75,6 +75,12 @@ internal static class Program
             return;
         }
 
+        if (args.Length >= 1 && args[0].Equals("--overlay-settings-lifetime-test", StringComparison.OrdinalIgnoreCase))
+        {
+            RunOverlaySettingsLifetimeTest();
+            return;
+        }
+
         if (args.Length >= 2 && args[0].Equals("--tracker-render-test", StringComparison.OrdinalIgnoreCase))
         {
             RunTrackerRenderTest(args[1]);
@@ -567,6 +573,82 @@ internal static class Program
         CaptureFormForDiagnostic(form, outputPath);
     }
 
+    private static void RunOverlaySettingsLifetimeTest()
+    {
+        using var host = new Form
+        {
+            ShowInTaskbar = false,
+            StartPosition = FormStartPosition.Manual,
+            Bounds = new Rectangle(100, 100, 240, 160)
+        };
+        Exception? failure = null;
+        host.Shown += (_, _) => host.BeginInvoke(() =>
+        {
+            var callbackCompleted = false;
+            using var dialog = new OverlaySettingsForm(
+                new AppSettings(),
+                async (_, _) =>
+                {
+                    await Task.Delay(120);
+                    callbackCompleted = true;
+                    return new Rectangle(10, 20, 300, 220);
+                });
+            var selectButton = dialog.Controls
+                .Cast<Control>()
+                .SelectMany(DescendantsAndSelf)
+                .OfType<Button>()
+                .First(button => button.Text == "Select Area...");
+            var clickTimer = new System.Windows.Forms.Timer { Interval = 50 };
+            clickTimer.Tick += (_, _) =>
+            {
+                clickTimer.Stop();
+                selectButton.PerformClick();
+            };
+            var closeTimer = new System.Windows.Forms.Timer { Interval = 350 };
+            closeTimer.Tick += (_, _) =>
+            {
+                closeTimer.Stop();
+                if (!dialog.IsDisposed)
+                {
+                    dialog.DialogResult = DialogResult.Cancel;
+                    dialog.Close();
+                }
+            };
+            dialog.Shown += (_, _) =>
+            {
+                clickTimer.Start();
+                closeTimer.Start();
+            };
+            dialog.ShowDialog(host);
+            clickTimer.Dispose();
+            closeTimer.Dispose();
+            if (!callbackCompleted)
+            {
+                failure = new InvalidOperationException(
+                    "Overlay settings modal closed while area selection was still running.");
+            }
+            host.Close();
+        });
+        Application.Run(host);
+        if (failure is not null)
+        {
+            throw failure;
+        }
+        Console.WriteLine("OVERLAY SETTINGS LIFETIME: OK");
+
+        static IEnumerable<Control> DescendantsAndSelf(Control root)
+        {
+            yield return root;
+            foreach (Control child in root.Controls)
+            {
+                foreach (var descendant in DescendantsAndSelf(child))
+                {
+                    yield return descendant;
+                }
+            }
+        }
+    }
+
     private static void RunTrackerRenderTest(string outputPath)
     {
         using var catalog = new ItemIconCatalogService(ApplicationDataPaths.RootDirectory);
@@ -828,9 +910,6 @@ internal static class Program
 
     private static void RunSequenceTest()
     {
-        static DetectedEvent E(string value) => new(
-            DetectedEventKind.Drop, value, value, 0, value, 1, 0, 0, 0);
-
         static void RequireCount(string name, IReadOnlyList<DetectedEvent> actual, int expected)
         {
             if (actual.Count != expected)
@@ -840,63 +919,60 @@ internal static class Program
         }
 
         var tracker = new EventSequenceTracker();
-        tracker.SetBaselineImmediately(new[] { E("A"), E("B") });
-        RequireCount("new suffix first frame", tracker.Observe(new[] { E("A"), E("B"), E("C") }), 1);
-        RequireCount("new suffix not replayed", tracker.Observe(new[] { E("A"), E("B"), E("C") }), 0);
-
-        tracker.SetBaselineImmediately(new[] { E("A"), E("C") });
-        tracker.Observe(new[] { E("A"), E("B"), E("C") });
-        RequireCount("recovered middle row", tracker.Observe(new[] { E("A"), E("B"), E("C") }), 0);
-
-        tracker.SetBaselineImmediately(new[] { E("A"), E("B") });
-        tracker.BeginResynchronization();
-        tracker.Observe(new[] { E("X"), E("Y") });
-        RequireCount("scroll baseline", tracker.Observe(new[] { E("X"), E("Y") }), 0);
-        RequireCount("after scroll new suffix", tracker.Observe(new[] { E("X"), E("Y"), E("Z") }), 1);
-        RequireCount("after scroll suffix not replayed", tracker.Observe(new[] { E("X"), E("Y"), E("Z") }), 0);
-
-        tracker.SetBaselineImmediately(new[] { E("A") });
-        RequireCount("legitimate repeated row", tracker.Observe(new[] { E("A"), E("A") }), 1);
-        RequireCount("repeated row not replayed", tracker.Observe(new[] { E("A"), E("A") }), 0);
-
-        tracker.SetBaselineImmediately(new[] { E("A") });
-        RequireCount("old anchor aged out", tracker.Observe(new[] { E("B") }), 1);
-
-        tracker.SetBaselineImmediately(Array.Empty<DetectedEvent>());
-        RequireCount("first event after empty baseline", tracker.Observe(new[] { E("C") }), 1);
-
-        tracker.SetBaselineImmediately(new[] { E("A"), E("B") });
-        RequireCount(
-            "wheel replay accepts every visible row once",
-            tracker.AcceptAllAndSetBaseline(new[] { E("A"), E("B") }),
-            2);
-        RequireCount(
-            "wheel replay frame is not repeated while stationary",
-            tracker.Observe(new[] { E("A"), E("B") }),
-            0);
-
         static DetectedEvent Positioned(string value, int top) => new(
             DetectedEventKind.Drop, value, value, top, value, 1, 0, 0, 0);
 
-        tracker.SetBaselineImmediately(new[] { Positioned("XP 600", 100), Positioned("Adena 123", 120) });
+        tracker.SetBaselineImmediately(new[] { Positioned("A", 100), Positioned("B", 120) });
         RequireCount(
-            "same instances after automatic chat movement",
+            "stationary OCR change is ignored",
             tracker.Observe(
-                new[] { Positioned("XP 600", 85), Positioned("Adena 123", 105) },
-                -15),
+                new[] { Positioned("A", 100), Positioned("B", 120), Positioned("artifact", 140) },
+                0,
+                ChatListMotion.Stationary,
+                1),
             0);
 
-        tracker.SetBaselineImmediately(new[] { Positioned("XP 600", 100), Positioned("Adena 123", 120) });
+        tracker.SetBaselineImmediately(new[] { Positioned("A", 100), Positioned("B", 120) });
         RequireCount(
-            "identical replacement loot after automatic chat movement",
+            "background false shift is vetoed by stationary rows",
             tracker.Observe(
-                new[] { Positioned("XP 600", 100), Positioned("Adena 123", 120) },
-                -15),
-            2);
+                new[] { Positioned("A", 100), Positioned("B", 120), Positioned("artifact", 140) },
+                -15,
+                ChatListMotion.Stationary,
+                1),
+            0);
+
+        tracker.SetBaselineImmediately(new[] { Positioned("A", 100), Positioned("B", 120) });
+        RequireCount(
+            "new row during upward chat advancement",
+            tracker.Observe(
+                new[] { Positioned("A", 85), Positioned("B", 105), Positioned("C", 125) },
+                -15,
+                ChatListMotion.ScrollDown,
+                0.7),
+            1);
+        RequireCount(
+            "stationary frame does not replay accepted row",
+            tracker.Observe(
+                new[] { Positioned("A", 85), Positioned("B", 105), Positioned("C", 125) },
+                0,
+                ChatListMotion.Stationary,
+                1),
+            0);
+
+        tracker.SetBaselineImmediately(new[] { Positioned("A", 100) });
+        RequireCount(
+            "consecutive identical row is a separate instance",
+            tracker.Observe(
+                new[] { Positioned("A", 85), Positioned("A", 105) },
+                -15,
+                ChatListMotion.ScrollDown,
+                0.7),
+            1);
 
         tracker.SetBaselineImmediately(new[] { Positioned("XP 600", 100), Positioned("Adena 123", 120) });
         RequireCount(
-            "identical appended loot after automatic chat movement",
+            "two identical loot pairs during one upward movement",
             tracker.Observe(
                 new[]
                 {
@@ -905,8 +981,30 @@ internal static class Program
                     Positioned("XP 600", 125),
                     Positioned("Adena 123", 145)
                 },
-                -15),
+                -15,
+                ChatListMotion.ScrollDown,
+                0.7),
             2);
+
+        tracker.SetBaselineImmediately(Array.Empty<DetectedEvent>());
+        RequireCount(
+            "strong visual movement works without an OCR anchor",
+            tracker.Observe(
+                new[] { Positioned("C", 140) },
+                -15,
+                ChatListMotion.Unknown,
+                0.8),
+            1);
+
+        tracker.SetBaselineImmediately(Array.Empty<DetectedEvent>());
+        RequireCount(
+            "weak unanchored background movement is ignored",
+            tracker.Observe(
+                new[] { Positioned("artifact", 140) },
+                -15,
+                ChatListMotion.Unknown,
+                0.4),
+            0);
 
         Console.WriteLine("SEQUENCE: OK");
     }

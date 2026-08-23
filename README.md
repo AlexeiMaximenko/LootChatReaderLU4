@@ -1,6 +1,6 @@
 # LootChatReaderLU4
 
-Current version: **1.15**
+Current version: **1.16**
 
 LootChatReaderLU4 is a local Windows application that reads the LU4 system chat from a selected screen area and keeps loot statistics.
 
@@ -20,11 +20,11 @@ The **Summary** tab shows aggregated drops and quest items. **Full Logs** keeps 
 
 The **Overlay Settings** section configures all in-game panels for the current tracker. Adena, XP, and SP can be placed to the left, above, to the right, or below the selected chat area. The obtained-items and quest-items panels each have an independent visually selected rectangle inside the game window; that rectangle controls both position and size. Their visibility is controlled by the two checkboxes on the tracker main page.
 
-All overlay panels are permanently transparent to mouse input. There is no `More` button, Shift mode, in-game menu, dragging, resizing, or input hook. Position and size are changed only through **Overlay Settings**, so the overlay cannot interfere with L2 controls. Each overlay is natively owned by its selected game window: only the foreground game's panels are raised, so multiple tracked clients do not cover unrelated applications or each other.
+All overlay panels are permanently transparent to mouse input. There is no `More` button, Shift mode, in-game menu, dragging, resizing, or overlay interaction hook. Position and size are changed only through **Overlay Settings**, so the overlay cannot interfere with L2 controls. Each overlay is natively owned by its selected game window: only the foreground game's panels are raised, so multiple tracked clients do not cover unrelated applications or each other.
 
 A session remains active across Stop/Start cycles. **Clear All** closes the current session and begins a new one immediately if monitoring is running. Closing the application also closes every started session. Completed sessions are saved per tracker and listed newest-first in **Tracking history**; selecting one restores its totals, item lists, full logs, and elapsed time in read-only mode.
 
-There is intentionally no session-level replay protection. Only immediately adjacent OCR frames are matched so a stationary row is not added on every capture. A mouse-wheel action inside the selected chat accepts every recognized row in the next frame again; therefore scrolling chat history can and will duplicate statistics. This mode favors not missing legitimate rapid or identical loot events during normal play. Scrolling outside the selected area has no effect.
+OCR differences alone are never counted as loot. The application first confirms that the chat text layer moved upward, then matches every previously visible row at its shifted position and accepts only unmatched new row instances. A stationary chat therefore adds nothing even if the game background, spell effects, or text antialiasing change. Consecutive identical rows are still counted separately because the older instance moves upward while the new instance appears below it. Mouse-wheel activity inside the selected chat starts a short baseline resynchronization so scrolling history cannot replay old loot.
 
 Screenshots are never written to disk. Tracker settings and completed tracking histories are stored in `%LOCALAPPDATA%\LU4LootChatReader`. OCR data is extracted there on first use. No icon download or catalog refresh is performed at runtime.
 

@@ -204,7 +204,11 @@ internal sealed class OverlaySettingsForm : Form
             : (_itemsRegionSet ? _itemsRegion : Rectangle.Empty);
         var label = questItems ? "quest-items overlay" : "obtained-items overlay";
         Enabled = false;
-        Hide();
+        // Hiding a modal form makes ShowDialog return immediately. Its caller
+        // then disposes the form while this asynchronous area selection is still
+        // running. Keep the modal window alive and make it visually transparent
+        // until the selector closes instead.
+        Opacity = 0;
         try
         {
             var selected = await _selectRegion(initial, label);
@@ -227,9 +231,12 @@ internal sealed class OverlaySettingsForm : Form
         }
         finally
         {
-            Enabled = true;
-            Show();
-            Activate();
+            if (!IsDisposed && !Disposing)
+            {
+                Opacity = 1;
+                Enabled = true;
+                Activate();
+            }
         }
     }
 
