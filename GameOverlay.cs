@@ -30,6 +30,7 @@ internal sealed class GameOverlayController : IDisposable
     private readonly AppSettings _settings;
     private readonly Func<nint> _targetWindowProvider;
     private readonly Action _saveSettings;
+    private readonly IDisposable _globalMouseRegistration;
     private readonly System.Windows.Forms.Timer _timer;
     private readonly StatsOverlayForm _stats = new();
     private readonly OverlayMenuForm _menu = new();
@@ -49,6 +50,7 @@ internal sealed class GameOverlayController : IDisposable
         _targetWindowProvider = targetWindowProvider;
         _saveSettings = saveSettings;
         GlobalShiftKeyState.AddReference();
+        _globalMouseRegistration = GlobalOverlayMouseRouter.Register(HandleGlobalMouse);
         _settings.OverlayDetailsWidth = Math.Clamp(_settings.OverlayDetailsWidth, 220, 1200);
         _settings.OverlayDetailsHeight = Math.Clamp(_settings.OverlayDetailsHeight, 120, 1200);
 
@@ -134,6 +136,25 @@ internal sealed class GameOverlayController : IDisposable
         _details.Hide();
     }
 
+    private bool HandleGlobalMouse(GlobalMouseActivity activity)
+    {
+        if (_disposed)
+        {
+            return false;
+        }
+
+        var targetWindow = _targetWindowProvider();
+        if (targetWindow == nint.Zero || GetForegroundWindow() != targetWindow)
+        {
+            return false;
+        }
+
+        var shiftPressed = GlobalShiftKeyState.IsPressed;
+        return _details.TryHandleGlobalMouse(activity, shiftPressed)
+            || _menu.TryHandleGlobalMouse(activity, shiftPressed)
+            || _stats.TryHandleGlobalMouse(activity, shiftPressed);
+    }
+
     private void UpdateDetailContent()
     {
         _details.SetItems(
@@ -175,8 +196,7 @@ internal sealed class GameOverlayController : IDisposable
             window.SetNativeOwner(targetWindow);
         }
 
-        var horizontalStats = placement is OverlayPlacement.Top or OverlayPlacement.Bottom;
-        _stats.SetHorizontal(horizontalStats);
+        _stats.SetPlacement(placement);
         var statsSize = StatsOverlayForm.GetOverlaySize(placement, captureRegion.Size);
         var statsBounds = ClampToBounds(
             PositionBeside(captureRegion, statsSize, placement),
@@ -428,6 +448,7 @@ internal sealed class GameOverlayController : IDisposable
         _disposed = true;
         _timer.Stop();
         _timer.Dispose();
+        _globalMouseRegistration.Dispose();
         _stats.Dispose();
         _menu.Dispose();
         _details.Dispose();
@@ -497,6 +518,7 @@ internal abstract class LayeredOverlayForm : Form
     private NativePoint _operationStartCursor;
     private Rectangle _operationStartBounds;
     private nint _nativeOwner;
+    private bool _globalClientPressed;
 
     protected LayeredOverlayForm(Size initialSize)
     {
@@ -582,6 +604,90 @@ internal abstract class LayeredOverlayForm : Form
             Bounds = bounds;
             RenderLayer();
         }
+    }
+
+    internal bool TryHandleGlobalMouse(GlobalMouseActivity activity, bool shiftPressed)
+    {
+        if (!Visible || IsDisposed)
+        {
+            return false;
+        }
+
+        if (activity.Action == GlobalMouseAction.Move)
+        {
+            if (_manualOperation is OverlayHitTest.Transparent)
+            {
+                return false;
+            }
+            if (shiftPressed)
+            {
+                ApplyManualOperation(new NativePoint(
+                    activity.ScreenLocation.X,
+                    activity.ScreenLocation.Y));
+            }
+            else
+            {
+                FinishManualOperation();
+            }
+            return true;
+        }
+
+        if (activity.Action == GlobalMouseAction.LeftUp)
+        {
+            if (_manualOperation is not OverlayHitTest.Transparent)
+            {
+                FinishManualOperation();
+                return true;
+            }
+            if (_globalClientPressed)
+            {
+                _globalClientPressed = false;
+                if (Bounds.Contains(activity.ScreenLocation))
+                {
+                    HandleClick(new Point(
+                        activity.ScreenLocation.X - Left,
+                        activity.ScreenLocation.Y - Top));
+                }
+                return true;
+            }
+            return false;
+        }
+
+        if (!shiftPressed || !Bounds.Contains(activity.ScreenLocation))
+        {
+            return false;
+        }
+
+        var clientPoint = new Point(
+            activity.ScreenLocation.X - Left,
+            activity.ScreenLocation.Y - Top);
+        var hit = HitTestInteractive(clientPoint);
+        if (hit == OverlayHitTest.Transparent)
+        {
+            return false;
+        }
+
+        if (activity.Action == GlobalMouseAction.Wheel)
+        {
+            HandleMouseWheel(activity.WheelDelta);
+            return true;
+        }
+
+        if (activity.Action != GlobalMouseAction.LeftDown)
+        {
+            return false;
+        }
+
+        if (hit == OverlayHitTest.Client)
+        {
+            _globalClientPressed = true;
+            return true;
+        }
+
+        StartManualOperation(
+            hit,
+            new NativePoint(activity.ScreenLocation.X, activity.ScreenLocation.Y));
+        return true;
     }
 
     protected void RenderLayer()
@@ -750,10 +856,7 @@ internal abstract class LayeredOverlayForm : Form
                 if (operation is not OverlayHitTest.Transparent
                     && GetCursorPos(out _operationStartCursor))
                 {
-                    _manualOperation = operation;
-                    _operationStartBounds = Bounds;
-                    IsInSizeMove = true;
-                    Capture = true;
+                    StartManualOperation(operation, _operationStartCursor);
                     message.Result = nint.Zero;
                     return;
                 }
@@ -854,6 +957,15 @@ internal abstract class LayeredOverlayForm : Form
             ? Math.Clamp(_operationStartBounds.Height + deltaY, minimumHeight, maximumHeight)
             : _operationStartBounds.Height;
         Size = new Size(width, height);
+    }
+
+    private void StartManualOperation(OverlayHitTest operation, NativePoint startPoint)
+    {
+        _manualOperation = operation;
+        _operationStartCursor = startPoint;
+        _operationStartBounds = Bounds;
+        IsInSizeMove = true;
+        Capture = true;
     }
 
     private void FinishManualOperation()
@@ -972,6 +1084,7 @@ internal sealed class StatsOverlayForm : LayeredOverlayForm
     private long _xp;
     private long _sp;
     private bool _horizontal;
+    private OverlayPlacement _placement = OverlayPlacement.Right;
     private Rectangle _moreBounds = new(2, 68, 105, 25);
 
     public StatsOverlayForm() : base(new Size(SideWidth, 96))
@@ -991,14 +1104,16 @@ internal sealed class StatsOverlayForm : LayeredOverlayForm
         _ => new Size(SideWidth, 96)
     };
 
-    public void SetHorizontal(bool horizontal)
+    public void SetPlacement(OverlayPlacement placement)
     {
-        if (_horizontal == horizontal)
+        var horizontal = placement is OverlayPlacement.Top or OverlayPlacement.Bottom;
+        if (_horizontal == horizontal && _placement == placement)
         {
             return;
         }
 
         _horizontal = horizontal;
+        _placement = placement;
         RenderLayer();
     }
 
@@ -1043,7 +1158,8 @@ internal sealed class StatsOverlayForm : LayeredOverlayForm
                     graphics,
                     values[index],
                     index == 3 ? _moreFont : _textFont,
-                    cell);
+                    cell,
+                    TextEdgeAlignment.Center);
             }
             return;
         }
@@ -1065,7 +1181,10 @@ internal sealed class StatsOverlayForm : LayeredOverlayForm
                 graphics,
                 values[index],
                 index == 3 ? _moreFont : _textFont,
-                row);
+                row,
+                _placement == OverlayPlacement.Left
+                    ? TextEdgeAlignment.Right
+                    : TextEdgeAlignment.Left);
         }
     }
 
@@ -1084,7 +1203,8 @@ internal sealed class StatsOverlayForm : LayeredOverlayForm
         Graphics graphics,
         string text,
         Font baseFont,
-        RectangleF bounds)
+        RectangleF bounds,
+        TextEdgeAlignment alignment)
     {
         var availableWidth = Math.Max(1F, bounds.Width - 8F);
         var availableHeight = Math.Max(1F, bounds.Height - 4F);
@@ -1101,10 +1221,23 @@ internal sealed class StatsOverlayForm : LayeredOverlayForm
             : null;
         var font = fittedFont ?? baseFont;
         measured = graphics.MeasureString(text, font);
+        var x = alignment switch
+        {
+            TextEdgeAlignment.Left => bounds.Left + 4F,
+            TextEdgeAlignment.Right => bounds.Right - measured.Width - 4F,
+            _ => bounds.Left + Math.Max(4F, (bounds.Width - measured.Width) / 2F)
+        };
         var location = new PointF(
-            bounds.Left + Math.Max(4F, (bounds.Width - measured.Width) / 2F),
+            x,
             bounds.Top + Math.Max(1F, (bounds.Height - measured.Height) / 2F));
         DrawOutlinedText(graphics, text, font, location);
+    }
+
+    private enum TextEdgeAlignment
+    {
+        Left,
+        Center,
+        Right
     }
 
     protected override void Dispose(bool disposing)

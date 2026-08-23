@@ -358,7 +358,24 @@ internal static class Program
             throw new InvalidOperationException("Releasing Shift did not restore click-through mode.");
         }
 
-        Console.WriteLine("OVERLAY: default off; click-through without Shift; capture-matched main panel; movable/resizable details");
+        var directClickReceived = false;
+        stats.MoreClicked += () => directClickReceived = true;
+        stats.SetLayeredBounds(new Rectangle(100, 100, StatsOverlayForm.SideWidth, 96));
+        stats.ShowInactive();
+        var morePoint = new Point(stats.Left + 12, stats.Top + 78);
+        var downHandled = stats.TryHandleGlobalMouse(
+            new GlobalMouseActivity(GlobalMouseAction.LeftDown, morePoint),
+            shiftPressed: true);
+        var upHandled = stats.TryHandleGlobalMouse(
+            new GlobalMouseActivity(GlobalMouseAction.LeftUp, morePoint),
+            shiftPressed: true);
+        stats.Hide();
+        if (!downHandled || !upHandled || !directClickReceived)
+        {
+            throw new InvalidOperationException("Direct global Shift-click routing did not activate More.");
+        }
+
+        Console.WriteLine("OVERLAY: click-through style + direct global Shift-click routing; capture-matched main panel");
     }
 
     private static void RunOverlayIsolationTest()
@@ -392,9 +409,9 @@ internal static class Program
         };
         using var firstOverlay = new GameOverlayController(Settings(), () => firstHandle, () => { });
         using var secondOverlay = new GameOverlayController(Settings(), () => secondHandle, () => { });
-        if (!GlobalShiftKeyState.RawInputAvailable)
+        if (!GlobalShiftKeyState.RawInputAvailable || !GlobalOverlayMouseRouter.HookAvailable)
         {
-            throw new InvalidOperationException("Raw keyboard input could not be registered.");
+            throw new InvalidOperationException("Raw keyboard or global mouse input could not be registered.");
         }
         firstTarget.Show();
         secondTarget.Show();
