@@ -19,6 +19,8 @@ internal sealed class GameOverlayController : IDisposable
 {
     private const int Gap = 6;
     private const uint GwHwndPrev = 3;
+    private const uint GaRootOwner = 3;
+    private const int VkLeftButton = 0x01;
     private const uint SwpNoSize = 0x0001;
     private const uint SwpNoMove = 0x0002;
     private const uint SwpNoActivate = 0x0010;
@@ -39,6 +41,7 @@ internal sealed class GameOverlayController : IDisposable
     private bool _menuVisible;
     private bool _detailsVisible;
     private bool _showQuestItems;
+    private bool _polledLeftButtonDown;
     private bool _disposed;
 
     public GameOverlayController(
@@ -143,17 +146,28 @@ internal sealed class GameOverlayController : IDisposable
             return false;
         }
 
+        if (activity.Action == GlobalMouseAction.LeftDown)
+        {
+            _polledLeftButtonDown = true;
+        }
+        else if (activity.Action == GlobalMouseAction.LeftUp)
+        {
+            _polledLeftButtonDown = false;
+        }
+
         var targetWindow = _targetWindowProvider();
-        if (targetWindow == nint.Zero || GetForegroundWindow() != targetWindow)
+        if (targetWindow == nint.Zero || !IsTargetForeground(targetWindow))
         {
             return false;
         }
 
-        var shiftPressed = GlobalShiftKeyState.IsPressed;
-        return _details.TryHandleGlobalMouse(activity, shiftPressed)
-            || _menu.TryHandleGlobalMouse(activity, shiftPressed)
-            || _stats.TryHandleGlobalMouse(activity, shiftPressed);
+        return RoutePhysicalMouse(activity, GlobalShiftKeyState.IsPressed);
     }
+
+    private bool RoutePhysicalMouse(GlobalMouseActivity activity, bool shiftPressed) =>
+        _details.TryHandleGlobalMouse(activity, shiftPressed)
+        || _menu.TryHandleGlobalMouse(activity, shiftPressed)
+        || _stats.TryHandleGlobalMouse(activity, shiftPressed);
 
     private void UpdateDetailContent()
     {
@@ -173,6 +187,7 @@ internal sealed class GameOverlayController : IDisposable
             || !_settings.HasCaptureRegion
             || !ScreenCaptureService.TryGetWindowBounds(targetWindow, out var windowBounds))
         {
+            SynchronizePolledPointerState();
             HideAll();
             return;
         }
@@ -183,6 +198,7 @@ internal sealed class GameOverlayController : IDisposable
             new Size(_settings.ReferenceWindowWidth, _settings.ReferenceWindowHeight));
         if (captureRegion.IsEmpty)
         {
+            SynchronizePolledPointerState();
             HideAll();
             return;
         }
@@ -253,11 +269,44 @@ internal sealed class GameOverlayController : IDisposable
         }
 
         PlaceDirectlyAboveTarget(targetWindow);
+        PollPhysicalPointer(targetWindow, shiftPressed);
+    }
+
+    private void PollPhysicalPointer(nint targetWindow, bool shiftPressed)
+    {
+        var leftButtonDown = (GetAsyncKeyState(VkLeftButton) & 0x8000) != 0;
+        if (!IsTargetForeground(targetWindow) || !GetCursorPos(out var cursor))
+        {
+            _polledLeftButtonDown = leftButtonDown;
+            return;
+        }
+
+        var location = new Point(cursor.X, cursor.Y);
+        if (leftButtonDown != _polledLeftButtonDown)
+        {
+            _polledLeftButtonDown = leftButtonDown;
+            RoutePhysicalMouse(
+                new GlobalMouseActivity(
+                    leftButtonDown ? GlobalMouseAction.LeftDown : GlobalMouseAction.LeftUp,
+                    location),
+                shiftPressed);
+        }
+        else if (leftButtonDown)
+        {
+            RoutePhysicalMouse(
+                new GlobalMouseActivity(GlobalMouseAction.Move, location),
+                shiftPressed);
+        }
+    }
+
+    private void SynchronizePolledPointerState()
+    {
+        _polledLeftButtonDown = (GetAsyncKeyState(VkLeftButton) & 0x8000) != 0;
     }
 
     private void PlaceDirectlyAboveTarget(nint targetWindow, bool? foregroundOverride = null)
     {
-        var targetIsForeground = foregroundOverride ?? GetForegroundWindow() == targetWindow;
+        var targetIsForeground = foregroundOverride ?? IsTargetForeground(targetWindow);
         if (targetIsForeground)
         {
             foreach (var window in new LayeredOverlayForm[] { _stats, _menu, _details })
@@ -439,6 +488,35 @@ internal sealed class GameOverlayController : IDisposable
         _details.Hide();
     }
 
+    internal static bool IsTargetForeground(nint targetWindow)
+    {
+        if (targetWindow == nint.Zero)
+        {
+            return false;
+        }
+
+        var foreground = GetForegroundWindow();
+        if (foreground == nint.Zero)
+        {
+            return false;
+        }
+        if (foreground == targetWindow)
+        {
+            return true;
+        }
+
+        var targetRoot = GetAncestor(targetWindow, GaRootOwner);
+        var foregroundRoot = GetAncestor(foreground, GaRootOwner);
+        if (targetRoot != nint.Zero && targetRoot == foregroundRoot)
+        {
+            return true;
+        }
+
+        GetWindowThreadProcessId(targetWindow, out var targetProcess);
+        GetWindowThreadProcessId(foreground, out var foregroundProcess);
+        return targetProcess != 0 && targetProcess == foregroundProcess;
+    }
+
     public void Dispose()
     {
         if (_disposed)
@@ -469,6 +547,19 @@ internal sealed class GameOverlayController : IDisposable
     [DllImport("user32.dll")]
     private static extern nint GetForegroundWindow();
 
+    [DllImport("user32.dll")]
+    private static extern nint GetAncestor(nint window, uint flags);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(nint window, out uint processId);
+
+    [DllImport("user32.dll")]
+    private static extern short GetAsyncKeyState(int virtualKey);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetCursorPos(out ControllerNativePoint point);
+
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetWindowPos(
@@ -479,6 +570,13 @@ internal sealed class GameOverlayController : IDisposable
         int width,
         int height,
         uint flags);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ControllerNativePoint
+    {
+        public int X;
+        public int Y;
+    }
 
 }
 
@@ -1159,7 +1257,8 @@ internal sealed class StatsOverlayForm : LayeredOverlayForm
                     values[index],
                     index == 3 ? _moreFont : _textFont,
                     cell,
-                    TextEdgeAlignment.Center);
+                    TextEdgeAlignment.Center,
+                    index == 3 && InteractionEnabled ? Color.LightGreen : null);
             }
             return;
         }
@@ -1184,7 +1283,8 @@ internal sealed class StatsOverlayForm : LayeredOverlayForm
                 row,
                 _placement == OverlayPlacement.Left
                     ? TextEdgeAlignment.Right
-                    : TextEdgeAlignment.Left);
+                    : TextEdgeAlignment.Left,
+                index == 3 && InteractionEnabled ? Color.LightGreen : null);
         }
     }
 
@@ -1204,7 +1304,8 @@ internal sealed class StatsOverlayForm : LayeredOverlayForm
         string text,
         Font baseFont,
         RectangleF bounds,
-        TextEdgeAlignment alignment)
+        TextEdgeAlignment alignment,
+        Color? color)
     {
         var availableWidth = Math.Max(1F, bounds.Width - 8F);
         var availableHeight = Math.Max(1F, bounds.Height - 4F);
@@ -1230,7 +1331,7 @@ internal sealed class StatsOverlayForm : LayeredOverlayForm
         var location = new PointF(
             x,
             bounds.Top + Math.Max(1F, (bounds.Height - measured.Height) / 2F));
-        DrawOutlinedText(graphics, text, font, location);
+        DrawOutlinedText(graphics, text, font, location, color);
     }
 
     private enum TextEdgeAlignment
