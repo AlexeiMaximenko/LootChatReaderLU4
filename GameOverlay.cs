@@ -48,17 +48,22 @@ internal sealed class GameOverlayController : IDisposable
         _settings = settings;
         _targetWindowProvider = targetWindowProvider;
         _saveSettings = saveSettings;
+        _settings.OverlayDetailsWidth = Math.Clamp(_settings.OverlayDetailsWidth, 220, 1200);
         _settings.OverlayDetailsHeight = Math.Clamp(_settings.OverlayDetailsHeight, 120, 1200);
 
         _stats.MoreClicked += ToggleMenu;
         _menu.CategorySelected += ShowCategory;
         _details.CloseClicked += CloseDetails;
-        _details.ResizeCompleted += height =>
+        _details.BoundsChangeCompleted += bounds =>
         {
-            _settings.OverlayDetailsHeight = Math.Clamp(height, 120, 1200);
+            _settings.OverlayDetailsX = bounds.X;
+            _settings.OverlayDetailsY = bounds.Y;
+            _settings.OverlayDetailsWidth = Math.Clamp(bounds.Width, 220, 1200);
+            _settings.OverlayDetailsHeight = Math.Clamp(bounds.Height, 120, 1200);
+            _settings.OverlayDetailsPositionSet = true;
             _saveSettings();
         };
-        _details.Height = _settings.OverlayDetailsHeight;
+        _details.Size = new Size(_settings.OverlayDetailsWidth, _settings.OverlayDetailsHeight);
 
         _timer = new System.Windows.Forms.Timer { Interval = 80 };
         _timer.Tick += (_, _) => UpdateOverlayWindows();
@@ -158,10 +163,14 @@ internal sealed class GameOverlayController : IDisposable
         _stats.InteractionEnabled = shiftPressed;
         _menu.InteractionEnabled = shiftPressed;
         _details.InteractionEnabled = shiftPressed;
+        foreach (var window in new LayeredOverlayForm[] { _stats, _menu, _details })
+        {
+            window.SetNativeOwner(targetWindow);
+        }
 
         var horizontalStats = placement is OverlayPlacement.Top or OverlayPlacement.Bottom;
         _stats.SetHorizontal(horizontalStats);
-        var statsSize = StatsOverlayForm.GetOverlaySize(horizontalStats);
+        var statsSize = StatsOverlayForm.GetOverlaySize(placement, captureRegion.Size);
         var statsBounds = ClampToBounds(
             PositionBeside(captureRegion, statsSize, placement),
             windowBounds);
@@ -188,16 +197,26 @@ internal sealed class GameOverlayController : IDisposable
         {
             if (!_details.IsInSizeMove)
             {
-                var detailHeight = Math.Clamp(
-                    _settings.OverlayDetailsHeight,
-                    120,
-                    Math.Max(120, windowBounds.Height - 12));
-                var anchor = menuBounds ?? statsBounds;
-                _details.SetLayeredBounds(PositionAuxiliary(
-                    anchor,
-                    new Size(LootOverlayForm.OverlayWidth, detailHeight),
-                    placement,
-                    windowBounds));
+                var detailSize = new Size(
+                    Math.Clamp(_settings.OverlayDetailsWidth, 220, 1200),
+                    Math.Clamp(_settings.OverlayDetailsHeight, 120, 1200));
+                if (_settings.OverlayDetailsPositionSet)
+                {
+                    _details.SetLayeredBounds(new Rectangle(
+                        _settings.OverlayDetailsX,
+                        _settings.OverlayDetailsY,
+                        detailSize.Width,
+                        detailSize.Height));
+                }
+                else
+                {
+                    var anchor = menuBounds ?? statsBounds;
+                    _details.SetLayeredBounds(PositionAuxiliary(
+                        anchor,
+                        detailSize,
+                        placement,
+                        windowBounds));
+                }
             }
             _details.ShowInactive();
         }
@@ -212,7 +231,8 @@ internal sealed class GameOverlayController : IDisposable
     private void PlaceDirectlyAboveTarget(nint targetWindow)
     {
         var targetIsTopmost = (GetWindowLongPtr(targetWindow, -20).ToInt64() & WsExTopmost) != 0;
-        if (targetIsTopmost)
+        var targetIsForeground = GetForegroundWindow() == targetWindow;
+        if (targetIsTopmost || targetIsForeground)
         {
             foreach (var window in new LayeredOverlayForm[] { _stats, _menu, _details })
             {
@@ -432,6 +452,9 @@ internal sealed class GameOverlayController : IDisposable
 
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
     private static extern nint GetWindowLongPtr(nint window, int index);
+
+    [DllImport("user32.dll")]
+    private static extern nint GetForegroundWindow();
 }
 
 internal abstract class LayeredOverlayForm : Form
@@ -441,6 +464,7 @@ internal abstract class LayeredOverlayForm : Form
     private const int WsExNoActivate = 0x08000000;
     private const int WsExTransparent = 0x00000020;
     private const int GwlExStyle = -20;
+    private const int GwlpHwndParent = -8;
     private const int WmNcHitTest = 0x0084;
     private const int WmNcLButtonDown = 0x00A1;
     private const int WmNcLButtonUp = 0x00A2;
@@ -451,15 +475,19 @@ internal abstract class LayeredOverlayForm : Form
     private const int WmExitSizeMove = 0x0232;
     private const int HtTransparent = -1;
     private const int HtClient = 1;
+    private const int HtCaption = 2;
+    private const int HtRight = 11;
     private const int HtBottom = 15;
+    private const int HtBottomRight = 17;
     private const byte AcSrcOver = 0x00;
     private const byte AcSrcAlpha = 0x01;
     private const int UlwAlpha = 0x00000002;
 
     private bool _interactionEnabled;
-    private bool _manualResizing;
-    private int _resizeStartCursorY;
-    private int _resizeStartHeight;
+    private OverlayHitTest _manualOperation = OverlayHitTest.Transparent;
+    private NativePoint _operationStartCursor;
+    private Rectangle _operationStartBounds;
+    private nint _nativeOwner;
 
     protected LayeredOverlayForm(Size initialSize)
     {
@@ -520,6 +548,17 @@ internal abstract class LayeredOverlayForm : Form
             Show();
         }
         RenderLayer();
+    }
+
+    public void SetNativeOwner(nint owner)
+    {
+        if (_nativeOwner == owner)
+        {
+            return;
+        }
+
+        _nativeOwner = owner;
+        SetWindowLongPtr(Handle, GwlpHwndParent, owner);
     }
 
     public void SetLayeredBounds(Rectangle bounds)
@@ -668,49 +707,58 @@ internal abstract class LayeredOverlayForm : Form
                 message.Result = hit switch
                 {
                     OverlayHitTest.Client => HtClient,
+                    OverlayHitTest.Move => HtCaption,
+                    OverlayHitTest.ResizeRight => HtRight,
                     OverlayHitTest.ResizeBottom => HtBottom,
+                    OverlayHitTest.ResizeBottomRight => HtBottomRight,
                     _ => HtTransparent
                 };
                 return;
 
             case WmLButtonUp when IsShiftPressed():
-                if (_manualResizing)
+                if (_manualOperation is not OverlayHitTest.Transparent)
                 {
-                    FinishManualResize();
+                    FinishManualOperation();
                     return;
                 }
                 HandleClick(PointFromLParam(message.LParam));
                 break;
 
-            case WmNcLButtonDown when IsShiftPressed() && (int)message.WParam == HtBottom:
-                if (GetCursorPos(out var startPoint))
+            case WmNcLButtonDown when IsShiftPressed():
+                var operation = (int)message.WParam switch
                 {
-                    _manualResizing = true;
+                    HtCaption => OverlayHitTest.Move,
+                    HtRight => OverlayHitTest.ResizeRight,
+                    HtBottom => OverlayHitTest.ResizeBottom,
+                    HtBottomRight => OverlayHitTest.ResizeBottomRight,
+                    _ => OverlayHitTest.Transparent
+                };
+                if (operation is not OverlayHitTest.Transparent
+                    && GetCursorPos(out _operationStartCursor))
+                {
+                    _manualOperation = operation;
+                    _operationStartBounds = Bounds;
                     IsInSizeMove = true;
-                    _resizeStartCursorY = startPoint.Y;
-                    _resizeStartHeight = Height;
                     Capture = true;
+                    message.Result = nint.Zero;
+                    return;
                 }
-                message.Result = nint.Zero;
-                return;
+                break;
 
-            case WmMouseMove when _manualResizing:
+            case WmMouseMove when _manualOperation is not OverlayHitTest.Transparent:
                 if (IsShiftPressed() && GetCursorPos(out var currentPoint))
                 {
-                    Height = Math.Clamp(
-                        _resizeStartHeight + currentPoint.Y - _resizeStartCursorY,
-                        Math.Max(1, MinimumSize.Height),
-                        MaximumSize.Height > 0 ? MaximumSize.Height : 1600);
+                    ApplyManualOperation(currentPoint);
                 }
                 else
                 {
-                    FinishManualResize();
+                    FinishManualOperation();
                 }
                 message.Result = nint.Zero;
                 return;
 
-            case WmNcLButtonUp when _manualResizing:
-                FinishManualResize();
+            case WmNcLButtonUp when _manualOperation is not OverlayHitTest.Transparent:
+                FinishManualOperation();
                 message.Result = nint.Zero;
                 return;
 
@@ -758,9 +806,34 @@ internal abstract class LayeredOverlayForm : Form
         }
     }
 
-    private void FinishManualResize()
+    private void ApplyManualOperation(NativePoint currentPoint)
     {
-        _manualResizing = false;
+        var deltaX = currentPoint.X - _operationStartCursor.X;
+        var deltaY = currentPoint.Y - _operationStartCursor.Y;
+        if (_manualOperation == OverlayHitTest.Move)
+        {
+            Location = new Point(
+                _operationStartBounds.X + deltaX,
+                _operationStartBounds.Y + deltaY);
+            return;
+        }
+
+        var minimumWidth = Math.Max(1, MinimumSize.Width);
+        var minimumHeight = Math.Max(1, MinimumSize.Height);
+        var maximumWidth = MaximumSize.Width > 0 ? MaximumSize.Width : 1600;
+        var maximumHeight = MaximumSize.Height > 0 ? MaximumSize.Height : 1600;
+        var width = _manualOperation is OverlayHitTest.ResizeRight or OverlayHitTest.ResizeBottomRight
+            ? Math.Clamp(_operationStartBounds.Width + deltaX, minimumWidth, maximumWidth)
+            : _operationStartBounds.Width;
+        var height = _manualOperation is OverlayHitTest.ResizeBottom or OverlayHitTest.ResizeBottomRight
+            ? Math.Clamp(_operationStartBounds.Height + deltaY, minimumHeight, maximumHeight)
+            : _operationStartBounds.Height;
+        Size = new Size(width, height);
+    }
+
+    private void FinishManualOperation()
+    {
+        _manualOperation = OverlayHitTest.Transparent;
         IsInSizeMove = false;
         Capture = false;
         ResizeFinished();
@@ -850,27 +923,40 @@ internal enum OverlayHitTest
 {
     Transparent,
     Client,
-    ResizeBottom
+    Move,
+    ResizeRight,
+    ResizeBottom,
+    ResizeBottomRight
 }
 
 internal sealed class StatsOverlayForm : LayeredOverlayForm
 {
-    public static readonly Size VerticalSize = new(205, 96);
-    public static readonly Size HorizontalSize = new(530, 34);
+    public const int SideWidth = 205;
+    public const int HorizontalHeight = 34;
     private readonly Font _textFont = new("Segoe UI", 12F, FontStyle.Bold, GraphicsUnit.Pixel);
     private readonly Font _moreFont = new("Segoe UI", 13F, FontStyle.Bold, GraphicsUnit.Pixel);
     private long _adena;
     private long _xp;
     private long _sp;
     private bool _horizontal;
+    private Rectangle _moreBounds = new(2, 68, 105, 25);
 
-    public StatsOverlayForm() : base(VerticalSize)
+    public StatsOverlayForm() : base(new Size(SideWidth, 96))
     {
     }
 
     public event Action? MoreClicked;
 
-    public static Size GetOverlaySize(bool horizontal) => horizontal ? HorizontalSize : VerticalSize;
+    public static Size GetOverlaySize(OverlayPlacement placement, Size captureSize) => placement switch
+    {
+        OverlayPlacement.Top or OverlayPlacement.Bottom => new Size(
+            Math.Max(1, captureSize.Width),
+            HorizontalHeight),
+        OverlayPlacement.Left or OverlayPlacement.Right => new Size(
+            SideWidth,
+            Math.Max(1, captureSize.Height)),
+        _ => new Size(SideWidth, 96)
+    };
 
     public void SetHorizontal(bool horizontal)
     {
@@ -898,37 +984,95 @@ internal sealed class StatsOverlayForm : LayeredOverlayForm
 
     protected override void DrawLayer(Graphics graphics, Size size)
     {
+        var values = new[]
+        {
+            $"Adena: {_adena:N0}",
+            $"XP: {_xp:N0}",
+            $"SP: {_sp:N0}",
+            "More ▾"
+        };
         if (_horizontal)
         {
-            DrawOutlinedText(graphics, $"Adena: {_adena:N0}", _textFont, new PointF(3, 5));
-            DrawOutlinedText(graphics, $"XP: {_xp:N0}", _textFont, new PointF(185, 5));
-            DrawOutlinedText(graphics, $"SP: {_sp:N0}", _textFont, new PointF(335, 5));
-            FillInvisibleHitArea(graphics, MoreBounds);
-            DrawOutlinedText(graphics, "More ▾", _moreFont, new PointF(445, 4));
+            var cellWidth = size.Width / 4F;
+            for (var index = 0; index < values.Length; index++)
+            {
+                var cell = RectangleF.FromLTRB(
+                    index * cellWidth,
+                    0,
+                    (index + 1) * cellWidth,
+                    size.Height);
+                if (index == 3)
+                {
+                    _moreBounds = Rectangle.Round(cell);
+                    FillInvisibleHitArea(graphics, _moreBounds);
+                }
+                DrawFittedOutlinedText(
+                    graphics,
+                    values[index],
+                    index == 3 ? _moreFont : _textFont,
+                    cell);
+            }
             return;
         }
 
-        DrawOutlinedText(graphics, $"Adena: {_adena:N0}", _textFont, new PointF(3, 2));
-        DrawOutlinedText(graphics, $"XP: {_xp:N0}", _textFont, new PointF(3, 23));
-        DrawOutlinedText(graphics, $"SP: {_sp:N0}", _textFont, new PointF(3, 44));
-        FillInvisibleHitArea(graphics, MoreBounds);
-        DrawOutlinedText(graphics, "More ▾", _moreFont, new PointF(3, 69));
+        var rowHeight = size.Height / 4F;
+        for (var index = 0; index < values.Length; index++)
+        {
+            var row = RectangleF.FromLTRB(
+                0,
+                index * rowHeight,
+                size.Width,
+                (index + 1) * rowHeight);
+            if (index == 3)
+            {
+                _moreBounds = Rectangle.Round(row);
+                FillInvisibleHitArea(graphics, _moreBounds);
+            }
+            DrawFittedOutlinedText(
+                graphics,
+                values[index],
+                index == 3 ? _moreFont : _textFont,
+                row);
+        }
     }
 
     protected override OverlayHitTest HitTestInteractive(Point point) =>
-        MoreBounds.Contains(point) ? OverlayHitTest.Client : OverlayHitTest.Transparent;
+        _moreBounds.Contains(point) ? OverlayHitTest.Client : OverlayHitTest.Transparent;
 
     protected override void HandleClick(Point point)
     {
-        if (MoreBounds.Contains(point))
+        if (_moreBounds.Contains(point))
         {
             MoreClicked?.Invoke();
         }
     }
 
-    private Rectangle MoreBounds => _horizontal
-        ? new Rectangle(438, 0, 92, 34)
-        : new Rectangle(2, 68, 105, 25);
+    private static void DrawFittedOutlinedText(
+        Graphics graphics,
+        string text,
+        Font baseFont,
+        RectangleF bounds)
+    {
+        var availableWidth = Math.Max(1F, bounds.Width - 8F);
+        var availableHeight = Math.Max(1F, bounds.Height - 4F);
+        var measured = graphics.MeasureString(text, baseFont);
+        var scale = Math.Min(1F, Math.Min(
+            availableWidth / Math.Max(1F, measured.Width),
+            availableHeight / Math.Max(1F, measured.Height)));
+        using var fittedFont = scale < 0.99F
+            ? new Font(
+                baseFont.FontFamily,
+                Math.Max(7F, baseFont.Size * scale),
+                baseFont.Style,
+                GraphicsUnit.Pixel)
+            : null;
+        var font = fittedFont ?? baseFont;
+        measured = graphics.MeasureString(text, font);
+        var location = new PointF(
+            bounds.Left + Math.Max(4F, (bounds.Width - measured.Width) / 2F),
+            bounds.Top + Math.Max(1F, (bounds.Height - measured.Height) / 2F));
+        DrawOutlinedText(graphics, text, font, location);
+    }
 
     protected override void Dispose(bool disposing)
     {
@@ -991,10 +1135,9 @@ internal sealed class OverlayMenuForm : LayeredOverlayForm
 
 internal sealed class LootOverlayForm : LayeredOverlayForm
 {
-    public const int OverlayWidth = 320;
     private const int HeaderHeight = 31;
     private const int RowHeight = 23;
-    private const int ResizeHeight = 14;
+    private const int ResizeGrip = 14;
     private readonly Font _titleFont = new("Segoe UI", 14F, FontStyle.Bold, GraphicsUnit.Pixel);
     private readonly Font _itemFont = new("Segoe UI", 12F, FontStyle.Bold, GraphicsUnit.Pixel);
     private readonly Font _hintFont = new("Segoe UI", 10F, FontStyle.Bold, GraphicsUnit.Pixel);
@@ -1002,14 +1145,14 @@ internal sealed class LootOverlayForm : LayeredOverlayForm
     private string _title = "Items";
     private int _scrollOffset;
 
-    public LootOverlayForm() : base(new Size(OverlayWidth, 320))
+    public LootOverlayForm() : base(new Size(320, 320))
     {
-        MinimumSize = new Size(320, 120);
-        MaximumSize = new Size(320, 1200);
+        MinimumSize = new Size(220, 120);
+        MaximumSize = new Size(1200, 1200);
     }
 
     public event Action? CloseClicked;
-    public event Action<int>? ResizeCompleted;
+    public event Action<Rectangle>? BoundsChangeCompleted;
 
     public void SetItems(string title, IReadOnlyList<OverlayItem> items)
     {
@@ -1025,7 +1168,7 @@ internal sealed class LootOverlayForm : LayeredOverlayForm
         DrawOutlinedText(graphics, _title, _titleFont, new PointF(3, 3));
         DrawOutlinedText(graphics, "×", _titleFont, new PointF(size.Width - 25, 2));
 
-        var visibleRows = Math.Max(1, (size.Height - HeaderHeight - ResizeHeight) / RowHeight);
+        var visibleRows = Math.Max(1, (size.Height - HeaderHeight - ResizeGrip) / RowHeight);
         foreach (var (item, index) in _items.Skip(_scrollOffset).Take(visibleRows).Select((item, index) => (item, index)))
         {
             var y = HeaderHeight + index * RowHeight;
@@ -1042,15 +1185,34 @@ internal sealed class LootOverlayForm : LayeredOverlayForm
 
         if (InteractionEnabled)
         {
-            DrawOutlinedText(graphics, "Shift + drag ↕", _hintFont, new PointF(size.Width - 98, size.Height - 15), Color.Gainsboro);
+            DrawOutlinedText(
+                graphics,
+                "Shift: move / resize",
+                _hintFont,
+                new PointF(Math.Max(3, size.Width - 125), size.Height - 15),
+                Color.Gainsboro);
         }
     }
 
     protected override OverlayHitTest HitTestInteractive(Point point)
     {
-        if (point.Y >= Height - ResizeHeight)
+        var nearRight = point.X >= Width - ResizeGrip;
+        var nearBottom = point.Y >= Height - ResizeGrip;
+        if (nearRight && nearBottom)
+        {
+            return OverlayHitTest.ResizeBottomRight;
+        }
+        if (nearRight)
+        {
+            return OverlayHitTest.ResizeRight;
+        }
+        if (nearBottom)
         {
             return OverlayHitTest.ResizeBottom;
+        }
+        if (point.Y <= HeaderHeight && point.X < Width - 34)
+        {
+            return OverlayHitTest.Move;
         }
         return ClientRectangle.Contains(point) ? OverlayHitTest.Client : OverlayHitTest.Transparent;
     }
@@ -1073,13 +1235,13 @@ internal sealed class LootOverlayForm : LayeredOverlayForm
     protected override void ResizeFinished()
     {
         ClampScrollOffset();
-        ResizeCompleted?.Invoke(Height);
+        BoundsChangeCompleted?.Invoke(Bounds);
         RenderLayer();
     }
 
     private void ClampScrollOffset()
     {
-        var visibleRows = Math.Max(1, (Height - HeaderHeight - ResizeHeight) / RowHeight);
+        var visibleRows = Math.Max(1, (Height - HeaderHeight - ResizeGrip) / RowHeight);
         _scrollOffset = Math.Clamp(_scrollOffset, 0, Math.Max(0, _items.Count - visibleRows));
     }
 

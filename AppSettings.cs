@@ -15,7 +15,11 @@ internal sealed class AppSettings
     public string TargetWindowTitle { get; set; } = string.Empty;
     public string TargetWindowClass { get; set; } = string.Empty;
     public OverlayPlacement OverlayPlacement { get; set; } = OverlayPlacement.Off;
+    public int OverlayDetailsX { get; set; }
+    public int OverlayDetailsY { get; set; }
+    public int OverlayDetailsWidth { get; set; } = 320;
     public int OverlayDetailsHeight { get; set; } = 320;
+    public bool OverlayDetailsPositionSet { get; set; }
 
     [JsonIgnore]
     public Rectangle CaptureRegion => new(CaptureX, CaptureY, CaptureWidth, CaptureHeight);

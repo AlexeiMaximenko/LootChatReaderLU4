@@ -1,6 +1,6 @@
 # LootChatReaderLU4
 
-Current version: **1.09**
+Current version: **1.10**
 
 LootChatReaderLU4 is a local Windows application that reads the LU4 system chat from a selected screen area and keeps loot statistics.
 
@@ -18,7 +18,7 @@ Each top-level tracker tab has independent window/area settings, monitoring cont
 
 The **Summary** tab shows aggregated drops and quest items. **Full Logs** keeps every accepted event. XP, SP, Adena, and active session time are displayed separately. **Share** copies the currently displayed summary to the clipboard.
 
-The arrow buttons around the capture preview place a transparent in-game overlay on the selected side of the chat area. The overlay is **Off** by default; clicking the currently selected arrow again turns it off. Adena, XP, SP, and **More** are arranged horizontally above/below the chat and vertically to its left/right. **More** opens either the normal-item or quest-item list for the current session. Hold **Shift** to interact with every overlay control: open a menu, choose a list, close it, scroll it, or drag the bottom edge to change its height. Without Shift, all overlay windows are click-through and game input passes through them. The detail height is saved independently for each tracker.
+The arrow buttons around the capture preview place a transparent in-game overlay on the selected side of the chat area. The overlay is **Off** by default; clicking the currently selected arrow again turns it off. Adena, XP, SP, and **More** are arranged horizontally above/below the chat and vertically to its left/right. The main panel exactly matches the selected chat width when placed above/below and its height when placed left/right. **More** opens either the normal-item or quest-item list for the current session. Hold **Shift** to interact with every overlay control: open a menu, choose a list, close it, scroll it, drag the detail header to move it, or drag its right/bottom edges to resize it. Without Shift, all overlay windows are click-through and game input passes through them. Detail position and size are saved independently for each tracker.
 
 A session remains active across Stop/Start cycles. **Clear All** closes the current session and begins a new one immediately if monitoring is running. Closing the application also closes every started session. Completed sessions are saved per tracker and listed newest-first in **Tracking history**; selecting one restores its totals, item lists, full logs, and elapsed time in read-only mode.
 

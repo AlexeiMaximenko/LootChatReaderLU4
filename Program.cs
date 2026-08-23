@@ -193,7 +193,18 @@ internal static class Program
         var legacyPath = Path.Combine(testDirectory, "settings.json");
         try
         {
-            var first = new TrackerProfile { Name = "Window 1" };
+            var first = new TrackerProfile
+            {
+                Name = "Window 1",
+                Settings = new AppSettings
+                {
+                    OverlayDetailsX = 420,
+                    OverlayDetailsY = 180,
+                    OverlayDetailsWidth = 480,
+                    OverlayDetailsHeight = 360,
+                    OverlayDetailsPositionSet = true
+                }
+            };
             first.Histories.Add(new TrackingHistory
             {
                 StartedAt = new DateTime(2026, 8, 23, 12, 0, 0),
@@ -229,7 +240,9 @@ internal static class Program
                 || loaded.SelectedProfileId != second.Id
                 || loadedHistory.Adena != 1234
                 || loadedHistory.Items.Single().Total != 3
-                || loadedHistory.Logs.Single().SummaryName != "Stem")
+                || loadedHistory.Logs.Single().SummaryName != "Stem"
+                || loaded.Profiles.Single(profile => profile.Name == "Window 1").Settings.OverlayDetailsWidth != 480
+                || loaded.Profiles.Single(profile => profile.Name == "Window 1").Settings.OverlayDetailsX != 420)
             {
                 throw new InvalidOperationException("Workspace/history round-trip failed.");
             }
@@ -302,14 +315,21 @@ internal static class Program
         const long wsExToolWindow = 0x00000080;
         const long wsExNoActivate = 0x08000000;
         const long wsExTransparent = 0x00000020;
+        var captureSize = new Size(382, 160);
+        var horizontalSize = StatsOverlayForm.GetOverlaySize(OverlayPlacement.Top, captureSize);
+        var verticalSize = StatsOverlayForm.GetOverlaySize(OverlayPlacement.Left, captureSize);
         if ((statsStyle & wsExLayered) == 0
             || (statsStyle & wsExToolWindow) == 0
             || (statsStyle & wsExNoActivate) == 0
             || (statsStyle & wsExTransparent) == 0
+            || details.MinimumSize.Width != 220
             || details.MinimumSize.Height != 120
+            || details.MaximumSize.Width != 1200
             || details.MaximumSize.Height != 1200
-            || StatsOverlayForm.HorizontalSize.Height >= StatsOverlayForm.VerticalSize.Height
-            || StatsOverlayForm.HorizontalSize.Width <= StatsOverlayForm.VerticalSize.Width)
+            || horizontalSize.Width != captureSize.Width
+            || horizontalSize.Height != StatsOverlayForm.HorizontalHeight
+            || verticalSize.Width != StatsOverlayForm.SideWidth
+            || verticalSize.Height != captureSize.Height)
         {
             throw new InvalidOperationException("Overlay window styles or resize limits are incorrect.");
         }
@@ -325,7 +345,7 @@ internal static class Program
             throw new InvalidOperationException("Releasing Shift did not restore click-through mode.");
         }
 
-        Console.WriteLine("OVERLAY: default off; click-through without Shift; interactive with Shift; height 120..1200");
+        Console.WriteLine("OVERLAY: default off; click-through without Shift; capture-matched main panel; movable/resizable details");
     }
 
     private static void RunOverlayRenderTest(
