@@ -86,6 +86,16 @@ internal sealed partial class OcrService : IDisposable
             yield return coarseLine with { Text = refinedText };
         }
 
+        // The original pixels preserve character shapes, while the binary mask
+        // removes a moving/animated game background. Try both representations;
+        // either one can be the clearer source depending on the current scene.
+        using var strictMask = OcrImagePreprocessor.CreateMask(crop, coarseLine.TextMask);
+        var strictText = ReadSingleLine(strictMask);
+        if (!string.IsNullOrWhiteSpace(strictText))
+        {
+            yield return coarseLine with { Text = strictText };
+        }
+
         if (!includeRelaxedYellowMask)
         {
             yield break;
@@ -116,7 +126,10 @@ internal sealed partial class OcrService : IDisposable
     {
         return line.Text.Contains("acquired", StringComparison.OrdinalIgnoreCase)
             || (line.Text.Contains("XP", StringComparison.OrdinalIgnoreCase)
-                && line.Text.StartsWith("You", StringComparison.OrdinalIgnoreCase));
+                && line.Text.Contains("SP", StringComparison.OrdinalIgnoreCase)
+                && HasYouHavePrefix(
+                    WordRegex().Matches(line.Text).Cast<Match>().ToArray(),
+                    WordRegex().Matches(line.Text).Count));
     }
 
     internal IReadOnlyList<string> ReadDiagnosticLines(Bitmap screenshot)
@@ -222,14 +235,13 @@ internal sealed partial class OcrService : IDisposable
                 : new DetectedEvent(kind, value, line.Text, line.Top, summaryName, quantity, 0, 0, adena);
         }
 
-        var experienceMatch = ExperienceRegex().Match(line.Text);
-        if (!experienceMatch.Success)
+        if (!TryExtractExperience(line.Text, out var xpText, out var spText))
         {
             return null;
         }
 
-        var xp = NormalizeNumber(experienceMatch.Groups[1].Value);
-        var sp = NormalizeNumber(experienceMatch.Groups[2].Value);
+        var xp = NormalizeNumber(xpText);
+        var sp = NormalizeNumber(spText);
         if (!long.TryParse(xp, out var xpValue) || !long.TryParse(sp, out var spValue))
         {
             return null;
@@ -283,11 +295,44 @@ internal sealed partial class OcrService : IDisposable
     private static string NormalizeNumber(string value)
     {
         return value
+            .Replace(",", string.Empty)
+            .Replace(" ", string.Empty)
             .Replace('O', '0')
             .Replace('o', '0')
             .Replace('I', '1')
             .Replace('l', '1')
             .Replace('|', '1');
+    }
+
+    private static bool TryExtractExperience(string text, out string xp, out string sp)
+    {
+        var exact = ExperienceRegex().Match(text);
+        if (exact.Success)
+        {
+            xp = exact.Groups[1].Value;
+            sp = exact.Groups[2].Value;
+            return true;
+        }
+
+        // A single damaged letter in "acquired" used to discard an otherwise
+        // perfectly readable XP/SP line. Require the recognizable message prefix
+        // and values, but accept the verb with up to two OCR substitutions.
+        var words = WordRegex().Matches(text).Cast<Match>().ToArray();
+        var acquiredIndex = Array.FindIndex(words, word =>
+            BoundedLevenshtein(word.Value, "acquired", 2) <= 2);
+        var values = ExperienceValuesRegex().Match(text);
+        if (acquiredIndex >= 0
+            && HasYouHavePrefix(words, acquiredIndex)
+            && values.Success)
+        {
+            xp = values.Groups[1].Value;
+            sp = values.Groups[2].Value;
+            return true;
+        }
+
+        xp = string.Empty;
+        sp = string.Empty;
+        return false;
     }
 
     private static bool TryExtractYellowItem(string text, out string verb, out string value)
@@ -444,8 +489,11 @@ internal sealed partial class OcrService : IDisposable
     [GeneratedRegex(@"(?:You\s+have\s+)?(obtained|earned)\s+(.+?)(?:\.|$)", RegexOptions.IgnoreCase)]
     private static partial Regex YellowItemRegex();
 
-    [GeneratedRegex(@"(?:You\s+have\s+)?acquired\s+([0-9OIl|]+)\s*XP\s+and\s+([0-9OIl|]+)\s*SP", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"(?:You\s+have\s+)?acquired\s+([0-9OIl|, ]+)\s*XP\s+and\s+([0-9OIl|, ]+)\s*SP", RegexOptions.IgnoreCase)]
     private static partial Regex ExperienceRegex();
+
+    [GeneratedRegex(@"([0-9OIl|, ]+)\s*XP\s+(?:and|ancl|ond)?\s*([0-9OIl|, ]+)\s*SP", RegexOptions.IgnoreCase)]
+    private static partial Regex ExperienceValuesRegex();
 
     [GeneratedRegex(@"\s+")]
     private static partial Regex WhitespaceRegex();

@@ -11,7 +11,10 @@ namespace LootChatReader;
 /// </summary>
 internal sealed class ChatFrameMotionDetector
 {
-    private const int MaximumShift = 96;
+    // A busy chat can advance by many rows while one OCR pass is running.
+    // Cover almost the full height of the common 160 px capture instead of
+    // silently losing bursts larger than the old 96 px search window.
+    private const int MaximumShift = 150;
     private const int MinimumMovement = 4;
     private const int MinimumIntersection = 36;
     private const double MinimumScore = 0.45;
@@ -22,6 +25,7 @@ internal sealed class ChatFrameMotionDetector
     private int _height;
 
     public double LastConfidence { get; private set; }
+    public IReadOnlyList<Rectangle> LastNewLineBands { get; private set; } = [];
 
     /// <returns>
     /// Current text position minus its previous position. Negative means normal
@@ -36,6 +40,7 @@ internal sealed class ChatFrameMotionDetector
             _width = frame.Width;
             _height = frame.Height;
             LastConfidence = 0;
+            LastNewLineBands = [];
             return 0;
         }
 
@@ -59,12 +64,16 @@ internal sealed class ChatFrameMotionDetector
             }
         }
 
-        _previousMask = currentMask;
+        var validShift = Math.Abs(bestShift) >= MinimumMovement
+            && best.Intersection >= MinimumIntersection
+            && best.Score >= MinimumScore
+            && best.Score >= stationary.Score + MinimumImprovementOverStationary;
         LastConfidence = best.Score;
-        if (Math.Abs(bestShift) < MinimumMovement
-            || best.Intersection < MinimumIntersection
-            || best.Score < MinimumScore
-            || best.Score < stationary.Score + MinimumImprovementOverStationary)
+        LastNewLineBands = validShift && bestShift < 0
+            ? FindNewLineBands(_previousMask, currentMask, _width, _height, bestShift)
+            : [];
+        _previousMask = currentMask;
+        if (!validShift)
         {
             return 0;
         }
@@ -78,6 +87,99 @@ internal sealed class ChatFrameMotionDetector
         _width = 0;
         _height = 0;
         LastConfidence = 0;
+        LastNewLineBands = [];
+    }
+
+    private static IReadOnlyList<Rectangle> FindNewLineBands(
+        byte[] previous,
+        byte[] current,
+        int width,
+        int height,
+        int shift)
+    {
+        var previousBands = FindLineBands(previous, width, height);
+        var currentBands = FindLineBands(current, width, height);
+        var matchedCurrent = new bool[currentBands.Count];
+        foreach (var previousBand in previousBands)
+        {
+            var expectedTop = previousBand.Top + shift;
+            var bestIndex = -1;
+            var bestDistance = int.MaxValue;
+            for (var index = 0; index < currentBands.Count; index++)
+            {
+                if (matchedCurrent[index])
+                {
+                    continue;
+                }
+
+                var distance = Math.Abs(currentBands[index].Top - expectedTop);
+                if (distance <= 4 && distance < bestDistance)
+                {
+                    bestDistance = distance;
+                    bestIndex = index;
+                }
+            }
+
+            if (bestIndex >= 0)
+            {
+                matchedCurrent[bestIndex] = true;
+            }
+        }
+
+        return currentBands
+            .Where((_, index) => !matchedCurrent[index])
+            .ToArray();
+    }
+
+    private static IReadOnlyList<Rectangle> FindLineBands(byte[] mask, int width, int height)
+    {
+        var activeRows = new bool[height];
+        var minimumPixels = Math.Max(5, width / 90);
+        for (var y = 1; y < height - 1; y++)
+        {
+            var count = 0;
+            var first = width;
+            var last = -1;
+            var offset = y * width;
+            for (var x = 3; x < width - 3; x++)
+            {
+                if (mask[offset + x] == 0)
+                {
+                    continue;
+                }
+                count++;
+                first = Math.Min(first, x);
+                last = x;
+            }
+            activeRows[y] = count >= minimumPixels && last - first >= 18;
+        }
+
+        const int maximumGap = 2;
+        var bands = new List<Rectangle>();
+        var start = -1;
+        var lastActive = -1;
+        for (var y = 0; y <= height; y++)
+        {
+            if (y < height && activeRows[y])
+            {
+                start = start < 0 ? y : start;
+                lastActive = y;
+                continue;
+            }
+            if (start < 0 || (y < height && y - lastActive <= maximumGap))
+            {
+                continue;
+            }
+
+            var bandHeight = lastActive - start + 1;
+            if (bandHeight is >= 3 and <= 22)
+            {
+                bands.Add(new Rectangle(0, Math.Max(0, start - 2), width, bandHeight + 4));
+            }
+            start = -1;
+            lastActive = -1;
+        }
+        return bands;
     }
 
     private static MotionScore ScoreShift(

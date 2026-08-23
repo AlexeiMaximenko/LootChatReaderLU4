@@ -1,148 +1,109 @@
 namespace LootChatReader;
 
+/// <summary>
+/// Associates parsed events with newly appeared physical chat rows. Text values
+/// are deliberately not used for replay protection: six identical XP rows are
+/// six different visual rows and therefore six events.
+/// </summary>
 internal sealed class EventSequenceTracker
 {
-    private const int StableFramesRequired = 2;
+    private const int PositionTolerance = 9;
+    private const int MaximumRetryFrames = 8;
 
-    private IReadOnlyList<DetectedEvent> _baseline = Array.Empty<DetectedEvent>();
-    private IReadOnlyList<DetectedEvent> _candidate = Array.Empty<DetectedEvent>();
-    private int _candidateFrames;
+    private readonly List<PendingLine> _pendingLines = [];
     private bool _needsBaseline = true;
 
     public IReadOnlyList<DetectedEvent> Observe(
         IReadOnlyList<DetectedEvent> current,
-        int visualVerticalShift = 0,
-        ChatListMotion recognizedLineMotion = ChatListMotion.Unknown,
-        double visualConfidence = 0)
+        int visualVerticalShift,
+        IReadOnlyList<Rectangle> newLineBands)
     {
         if (_needsBaseline)
         {
-            if (!SequencesEqual(_candidate, current))
-            {
-                _candidate = current.ToArray();
-                _candidateFrames = 1;
-                return Array.Empty<DetectedEvent>();
-            }
-
-            _candidateFrames++;
-            if (_candidateFrames < StableFramesRequired)
-            {
-                return Array.Empty<DetectedEvent>();
-            }
-
-            _baseline = _candidate.ToArray();
+            _pendingLines.Clear();
             _needsBaseline = false;
-            return Array.Empty<DetectedEvent>();
+            return [];
         }
 
-        // A new OCR interpretation is not an event by itself. Background motion,
-        // spell effects and antialiasing can change OCR while every chat row stays
-        // in place. Accept rows only when the text layer is coherently advancing
-        // upward. A stationary or downward-moving recognized anchor vetoes a
-        // visual false positive. If OCR has no reusable anchor, require a strong
-        // visual match before trusting the shift.
-        var chatAdvancedUp = visualVerticalShift <= -4
-            && recognizedLineMotion != ChatListMotion.ScrollUp
-            && recognizedLineMotion != ChatListMotion.Stationary
-            && (recognizedLineMotion == ChatListMotion.ScrollDown
-                || visualConfidence >= 0.58
-                || (visualConfidence >= 0.45
-                    && current.Any(item => item.Kind == DetectedEventKind.Experience)));
-        if (!chatAdvancedUp)
+        AdvancePendingLines(visualVerticalShift);
+        foreach (var band in newLineBands.OrderBy(band => band.Top))
         {
-            _baseline = current.ToArray();
-            _candidate = current.ToArray();
-            _candidateFrames = 1;
-            return Array.Empty<DetectedEvent>();
+            if (band.Height <= 0
+                || _pendingLines.Any(existing =>
+                    existing.Age == 0 && Math.Abs(existing.Bounds.Top - band.Top) <= 3))
+            {
+                continue;
+            }
+            _pendingLines.Add(new PendingLine(band, 0));
         }
 
-        var newEvents = FindUnmatchedAfterMovement(
-            _baseline,
-            current,
-            visualVerticalShift);
-        _baseline = current.ToArray();
-        _candidate = current.ToArray();
-        _candidateFrames = 1;
-        return newEvents;
-    }
-
-    private static IReadOnlyList<DetectedEvent> FindUnmatchedAfterMovement(
-        IReadOnlyList<DetectedEvent> previous,
-        IReadOnlyList<DetectedEvent> current,
-        int verticalShift)
-    {
-        const int positionTolerance = 8;
-        var matchedCurrent = new bool[current.Count];
-        foreach (var previousEvent in previous.OrderBy(item => item.Top))
+        var accepted = new List<DetectedEvent>();
+        foreach (var detectedEvent in current.OrderBy(item => item.Top))
         {
-            var expectedTop = previousEvent.Top + verticalShift;
             var bestIndex = -1;
             var bestDistance = int.MaxValue;
-            for (var currentIndex = 0; currentIndex < current.Count; currentIndex++)
+            for (var index = 0; index < _pendingLines.Count; index++)
             {
-                if (matchedCurrent[currentIndex]
-                    || current[currentIndex].Identity != previousEvent.Identity)
+                var distance = Math.Abs(detectedEvent.Top - _pendingLines[index].Bounds.Top);
+                if (distance <= PositionTolerance && distance < bestDistance)
                 {
-                    continue;
-                }
-
-                var distance = Math.Abs(current[currentIndex].Top - expectedTop);
-                if (distance <= positionTolerance && distance < bestDistance)
-                {
+                    bestIndex = index;
                     bestDistance = distance;
-                    bestIndex = currentIndex;
                 }
             }
-
-            if (bestIndex >= 0)
+            if (bestIndex < 0)
             {
-                matchedCurrent[bestIndex] = true;
+                continue;
+            }
+
+            accepted.Add(detectedEvent);
+            _pendingLines.RemoveAt(bestIndex);
+        }
+        return accepted;
+    }
+
+    private void AdvancePendingLines(int visualVerticalShift)
+    {
+        for (var index = _pendingLines.Count - 1; index >= 0; index--)
+        {
+            var pending = _pendingLines[index];
+            var moved = pending with
+            {
+                Bounds = new Rectangle(
+                    pending.Bounds.X,
+                    pending.Bounds.Y + visualVerticalShift,
+                    pending.Bounds.Width,
+                    pending.Bounds.Height),
+                Age = pending.Age + 1
+            };
+            if (moved.Age > MaximumRetryFrames || moved.Bounds.Bottom < 0)
+            {
+                _pendingLines.RemoveAt(index);
+            }
+            else
+            {
+                _pendingLines[index] = moved;
             }
         }
-
-        return current
-            .Where((_, index) => !matchedCurrent[index])
-            .ToArray();
     }
 
     public void BeginResynchronization()
     {
-        _candidate = Array.Empty<DetectedEvent>();
-        _candidateFrames = 0;
+        _pendingLines.Clear();
         _needsBaseline = true;
     }
 
     public void SetBaselineImmediately(IReadOnlyList<DetectedEvent> current)
     {
-        _baseline = current.ToArray();
-        _candidate = current.ToArray();
-        _candidateFrames = StableFramesRequired;
+        _ = current;
+        _pendingLines.Clear();
         _needsBaseline = false;
     }
 
     public void Reset()
     {
-        _baseline = Array.Empty<DetectedEvent>();
         BeginResynchronization();
     }
 
-    private static bool SequencesEqual(
-        IReadOnlyList<DetectedEvent> first,
-        IReadOnlyList<DetectedEvent> second)
-    {
-        if (first.Count != second.Count)
-        {
-            return false;
-        }
-
-        for (var index = 0; index < first.Count; index++)
-        {
-            if (first[index].Identity != second[index].Identity)
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
+    private sealed record PendingLine(Rectangle Bounds, int Age);
 }

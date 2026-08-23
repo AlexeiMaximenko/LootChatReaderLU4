@@ -762,7 +762,9 @@ internal static class Program
             ["Ashen Reagent Cache"] = "Ashen Reagent Cache Tier D",
             ["Charcoal"] = "Charcoal",
             ["Cargo Box"] = "Cargo Box",
-            ["Key Imprint"] = "Key Imprint"
+            ["Key Imprint"] = "Key Imprint",
+            ["Pure Mana Crystall"] = "Pure Mana Crystal",
+            ["Pure Mana CrystaI"] = "Pure Mana Crystal"
         };
 
         foreach (var testCase in cases)
@@ -908,6 +910,50 @@ internal static class Program
             return bitmap;
         }
 
+        static Bitmap CreateRepeatedExperienceFrame(bool appendNew)
+        {
+            var bitmap = new Bitmap(360, 160, System.Drawing.Imaging.PixelFormat.Format24bppRgb);
+            using var graphics = Graphics.FromImage(bitmap);
+            graphics.Clear(Color.FromArgb(24, 27, 25));
+            graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.SingleBitPerPixelGridFit;
+            using var font = new Font("Segoe UI", 12F, FontStyle.Regular, GraphicsUnit.Pixel);
+            using var gray = new SolidBrush(Color.FromArgb(185, 185, 185));
+            var offset = appendNew ? -15 : 0;
+            var lines = new[]
+            {
+                "Power of the spirits enabled.",
+                "Use Soulshot (D-Grade).",
+                "You have acquired 2000 XP and 160 SP.",
+                "Power of the spirits enabled."
+            };
+            for (var index = 0; index < lines.Length; index++)
+            {
+                graphics.DrawString(lines[index], font, gray, 8, 35 + index * 20 + offset);
+            }
+            if (appendNew)
+            {
+                graphics.DrawString(
+                    "You have acquired 2000 XP and 160 SP.",
+                    font,
+                    gray,
+                    8,
+                    115);
+            }
+            return bitmap;
+        }
+
+        static Bitmap CreatePureManaCrystalFrame()
+        {
+            var bitmap = new Bitmap(360, 80, System.Drawing.Imaging.PixelFormat.Format24bppRgb);
+            using var graphics = Graphics.FromImage(bitmap);
+            graphics.Clear(Color.FromArgb(24, 27, 25));
+            graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.SingleBitPerPixelGridFit;
+            using var font = new Font("Segoe UI", 12F, FontStyle.Regular, GraphicsUnit.Pixel);
+            using var yellow = new SolidBrush(Color.FromArgb(235, 220, 20));
+            graphics.DrawString("You have obtained Pure Mana Crystal.", font, yellow, 8, 35);
+            return bitmap;
+        }
+
         using var first = CreateFrame(0);
         using var moved = CreateFrame(-15);
         var detector = new ChatFrameMotionDetector();
@@ -946,9 +992,41 @@ internal static class Program
                 $"event={grayExperience?.Value ?? "none"}, confidence={grayDetector.LastConfidence:F2}.");
         }
 
+        using var repeatedFirst = CreateRepeatedExperienceFrame(false);
+        using var repeatedCurrent = CreateRepeatedExperienceFrame(true);
+        var repeatedDetector = new ChatFrameMotionDetector();
+        repeatedDetector.Observe(repeatedFirst);
+        var repeatedShift = repeatedDetector.Observe(repeatedCurrent);
+        var firstExperienceEvents = grayOcr.ReadEvents(repeatedFirst);
+        var currentExperienceEvents = grayOcr.ReadEvents(repeatedCurrent);
+        var repeatedTracker = new EventSequenceTracker();
+        repeatedTracker.SetBaselineImmediately(firstExperienceEvents);
+        var newlyAccepted = repeatedTracker.Observe(
+            currentExperienceEvents,
+            repeatedShift,
+            repeatedDetector.LastNewLineBands);
+        if (Math.Abs(repeatedShift + 15) > 2
+            || repeatedDetector.LastNewLineBands.Count == 0
+            || currentExperienceEvents.Count(item => item.Kind == DetectedEventKind.Experience) != 2
+            || newlyAccepted.Count(item => item.Kind == DetectedEventKind.Experience) != 1)
+        {
+            throw new InvalidOperationException(
+                $"Repeated XP row failed: shift={repeatedShift}, bands={repeatedDetector.LastNewLineBands.Count}, " +
+                $"visible events={currentExperienceEvents.Count}, accepted={newlyAccepted.Count}.");
+        }
+
+        using var pureManaFrame = CreatePureManaCrystalFrame();
+        var pureMana = grayOcr.ReadEvents(pureManaFrame)
+            .SingleOrDefault(item => item.Kind == DetectedEventKind.Drop);
+        if (!string.Equals(pureMana?.SummaryName, "Pure Mana Crystal", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"Pure Mana Crystal OCR failed: {pureMana?.RawText ?? "none"}.");
+        }
+
         Console.WriteLine(
             $"FRAME MOTION: colored={shift}; gray={grayShift}; " +
-            $"gray lines={grayLineBounds.Count}; stationary=0");
+            $"repeated XP accepted={newlyAccepted.Count}; Pure Mana Crystal=OK; stationary=0");
     }
 
     private static void RunSequenceTest()
@@ -964,6 +1042,7 @@ internal static class Program
         var tracker = new EventSequenceTracker();
         static DetectedEvent Positioned(string value, int top) => new(
             DetectedEventKind.Drop, value, value, top, value, 1, 0, 0, 0);
+        static Rectangle Band(int top) => new(0, top, 360, 16);
 
         tracker.SetBaselineImmediately(new[] { Positioned("A", 100), Positioned("B", 120) });
         RequireCount(
@@ -971,18 +1050,16 @@ internal static class Program
             tracker.Observe(
                 new[] { Positioned("A", 100), Positioned("B", 120), Positioned("artifact", 140) },
                 0,
-                ChatListMotion.Stationary,
-                1),
+                []),
             0);
 
         tracker.SetBaselineImmediately(new[] { Positioned("A", 100), Positioned("B", 120) });
         RequireCount(
-            "background false shift is vetoed by stationary rows",
+            "background shift without a new physical row is ignored",
             tracker.Observe(
                 new[] { Positioned("A", 100), Positioned("B", 120), Positioned("artifact", 140) },
                 -15,
-                ChatListMotion.Stationary,
-                1),
+                []),
             0);
 
         tracker.SetBaselineImmediately(new[] { Positioned("A", 100), Positioned("B", 120) });
@@ -991,16 +1068,14 @@ internal static class Program
             tracker.Observe(
                 new[] { Positioned("A", 85), Positioned("B", 105), Positioned("C", 125) },
                 -15,
-                ChatListMotion.ScrollDown,
-                0.7),
+                [Band(125)]),
             1);
         RequireCount(
             "stationary frame does not replay accepted row",
             tracker.Observe(
                 new[] { Positioned("A", 85), Positioned("B", 105), Positioned("C", 125) },
                 0,
-                ChatListMotion.Stationary,
-                1),
+                []),
             0);
 
         tracker.SetBaselineImmediately(new[] { Positioned("A", 100) });
@@ -1009,8 +1084,7 @@ internal static class Program
             tracker.Observe(
                 new[] { Positioned("A", 85), Positioned("A", 105) },
                 -15,
-                ChatListMotion.ScrollDown,
-                0.7),
+                [Band(105)]),
             1);
 
         tracker.SetBaselineImmediately(new[] { Positioned("XP 600", 100), Positioned("Adena 123", 120) });
@@ -1025,29 +1099,40 @@ internal static class Program
                     Positioned("Adena 123", 145)
                 },
                 -15,
-                ChatListMotion.ScrollDown,
-                0.7),
+                [Band(125), Band(145)]),
             2);
 
         tracker.SetBaselineImmediately(Array.Empty<DetectedEvent>());
         RequireCount(
-            "strong visual movement works without an OCR anchor",
+            "new physical row is retained when first OCR attempt fails",
+            tracker.Observe(
+                [],
+                -15,
+                [Band(140)]),
+            0);
+        RequireCount(
+            "retained row accepts a later OCR result",
             tracker.Observe(
                 new[] { Positioned("C", 140) },
-                -15,
-                ChatListMotion.Unknown,
-                0.8),
+                0,
+                []),
             1);
 
         tracker.SetBaselineImmediately(Array.Empty<DetectedEvent>());
         RequireCount(
-            "weak unanchored background movement is ignored",
+            "pending row follows the next upward movement",
             tracker.Observe(
-                new[] { Positioned("artifact", 140) },
+                [],
                 -15,
-                ChatListMotion.Unknown,
-                0.4),
+                [Band(140)]),
             0);
+        RequireCount(
+            "moved pending row accepts delayed OCR",
+            tracker.Observe(
+                new[] { Positioned("C", 125) },
+                -15,
+                []),
+            1);
 
         var experience = new DetectedEvent(
             DetectedEventKind.Experience,
@@ -1059,14 +1144,21 @@ internal static class Program
             600,
             42,
             0);
+        var damagedExperience = OcrService.ParseDiagnosticText(
+            "You have acguired 2,000 XP ancl 160 SP.",
+            TextMask.White);
+        if (damagedExperience?.Xp != 2000 || damagedExperience.Sp != 160)
+        {
+            throw new InvalidOperationException(
+                $"Damaged XP OCR text was not recovered: {damagedExperience?.Value ?? "none"}.");
+        }
         tracker.SetBaselineImmediately(Array.Empty<DetectedEvent>());
         RequireCount(
             "gray XP/SP without yellow loot",
             tracker.Observe(
                 new[] { experience },
                 -15,
-                ChatListMotion.Unknown,
-                0.46),
+                [Band(140)]),
             1);
 
         Console.WriteLine("SEQUENCE: OK");
