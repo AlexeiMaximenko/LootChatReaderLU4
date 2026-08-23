@@ -14,15 +14,21 @@ internal static class Program
             return;
         }
 
-        if (args.Length >= 1 && args[0].Equals("--icon-sync-test", StringComparison.OrdinalIgnoreCase))
-        {
-            RunIconSyncTest();
-            return;
-        }
-
         if (args.Length >= 1 && args[0].Equals("--icon-cache-test", StringComparison.OrdinalIgnoreCase))
         {
             RunIconCacheTest();
+            return;
+        }
+
+        if (args.Length >= 1 && args[0].Equals("--embedded-icons-test", StringComparison.OrdinalIgnoreCase))
+        {
+            RunEmbeddedIconsTest();
+            return;
+        }
+
+        if (args.Length >= 1 && args[0].Equals("--workspace-test", StringComparison.OrdinalIgnoreCase))
+        {
+            RunWorkspaceTest();
             return;
         }
 
@@ -93,31 +99,105 @@ internal static class Program
         }
     }
 
-    private static void RunIconSyncTest()
-    {
-        using var catalog = new ItemIconCatalogService(ApplicationDataPaths.RootDirectory);
-        var progress = new Progress<IconCatalogProgress>(value =>
-            Console.WriteLine($"PAGE {value.Page}/{value.TotalPages}: {value.ItemCount}"));
-        var count = catalog.SyncAsync(progress).GetAwaiter().GetResult();
-        Console.WriteLine($"TOTAL: {count}");
-
-        foreach (var name in new[] { "Stem", "Monster Eye Meat", "Manster Eye Meat", "Basilisk's Gizzard", "Basili'" })
-        {
-            var match = catalog.Resolve(name);
-            Console.WriteLine(match is null
-                ? $"NO MATCH: {name}"
-                : $"MATCH: {name} -> {match.Entry.Name} ({match.Entry.IconPath}), fuzzy={match.IsFuzzyMatch}");
-        }
-    }
-
     private static void RunIconCacheTest()
     {
         using var catalog = new ItemIconCatalogService(ApplicationDataPaths.RootDirectory);
         var match = catalog.Resolve("Stem")
             ?? throw new InvalidOperationException("Stem was not found in the cached catalog.");
         using var image = catalog.LoadIconAsync(match.Entry).GetAwaiter().GetResult()
-            ?? throw new InvalidOperationException("The Stem icon could not be downloaded.");
+            ?? throw new InvalidOperationException("The embedded Stem icon could not be loaded.");
         Console.WriteLine($"CATALOG: {catalog.Count}; STEM ICON: {image.Width}x{image.Height}");
+    }
+
+    private static void RunEmbeddedIconsTest()
+    {
+        var assembly = typeof(Program).Assembly;
+        using var stream = assembly.GetManifestResourceStream("LootChatReader.Resources.item-icons.json")
+            ?? throw new InvalidOperationException("The embedded item catalog is missing.");
+        var entries = System.Text.Json.JsonSerializer.Deserialize<ItemIconEntry[]>(stream)
+            ?? throw new InvalidOperationException("The embedded item catalog is empty.");
+        var resources = assembly.GetManifestResourceNames().ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var unavailableAtSource = entries
+            .Select(entry => entry.IconPath)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Where(path => !path.EndsWith("/none.png", StringComparison.OrdinalIgnoreCase))
+            .Where(path =>
+            {
+                var fileName = Path.GetFileName(new Uri(new Uri("https://mw2.wiki/"), path).AbsolutePath);
+                return !resources.Contains($"LootChatReader.Resources.ItemIcons.{fileName}");
+            })
+            .ToArray();
+        if (unavailableAtSource.Length > 0
+            && !resources.Contains("LootChatReader.Resources.ItemIcons.etc_jewel_box_i00.png"))
+        {
+            throw new InvalidOperationException("The generic fallback for unavailable wiki icons is missing.");
+        }
+
+        var iconCount = resources.Count(name => name.StartsWith(
+            "LootChatReader.Resources.ItemIcons.",
+            StringComparison.OrdinalIgnoreCase));
+        Console.WriteLine(
+            $"EMBEDDED ICONS: {iconCount}; CATALOG ENTRIES: {entries.Length}; " +
+            $"SOURCE FALLBACKS: {unavailableAtSource.Length}");
+    }
+
+    private static void RunWorkspaceTest()
+    {
+        var testDirectory = Path.Combine(Path.GetTempPath(), $"LootChatReader-{Guid.NewGuid():N}");
+        var workspacePath = Path.Combine(testDirectory, "workspace.json");
+        var legacyPath = Path.Combine(testDirectory, "settings.json");
+        try
+        {
+            var first = new TrackerProfile { Name = "Window 1" };
+            first.Histories.Add(new TrackingHistory
+            {
+                StartedAt = new DateTime(2026, 8, 23, 12, 0, 0),
+                EndedAt = new DateTime(2026, 8, 23, 12, 10, 0),
+                ElapsedTicks = TimeSpan.FromMinutes(8).Ticks,
+                Adena = 1234,
+                Xp = 5678,
+                Sp = 90,
+                Items = [new HistoryItem { Name = "Stem", Total = 3 }],
+                QuestItems = [new HistoryItem { Name = "Monster Eye Meat", Total = 2 }],
+                Logs =
+                [
+                    new HistoryLogEntry
+                    {
+                        Time = new DateTime(2026, 8, 23, 12, 1, 0),
+                        Type = "Drop",
+                        Value = "Stem",
+                        SummaryName = "Stem"
+                    }
+                ]
+            });
+            var second = new TrackerProfile { Name = "Window 2" };
+            var source = new WorkspaceState
+            {
+                SelectedProfileId = second.Id,
+                Profiles = [first, second]
+            };
+            source.Save(workspacePath);
+
+            var loaded = WorkspaceState.Load(workspacePath, legacyPath);
+            var loadedHistory = loaded.Profiles.Single(profile => profile.Name == "Window 1").Histories.Single();
+            if (loaded.Profiles.Count != 2
+                || loaded.SelectedProfileId != second.Id
+                || loadedHistory.Adena != 1234
+                || loadedHistory.Items.Single().Total != 3
+                || loadedHistory.Logs.Single().SummaryName != "Stem")
+            {
+                throw new InvalidOperationException("Workspace/history round-trip failed.");
+            }
+
+            Console.WriteLine("WORKSPACE: OK; PROFILES: 2; HISTORIES: 1");
+        }
+        finally
+        {
+            if (Directory.Exists(testDirectory))
+            {
+                Directory.Delete(testDirectory, true);
+            }
+        }
     }
 
     private static void RunCatalogResolveTest()

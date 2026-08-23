@@ -1,6 +1,6 @@
 # LootChatReaderLU4
 
-Current version: **1.05**
+Current version: **1.06**
 
 LootChatReaderLU4 is a local Windows application that reads the LU4 system chat from a selected screen area and keeps loot statistics.
 
@@ -13,20 +13,25 @@ LootChatReaderLU4 is a local Windows application that reads the LU4 system chat 
 
 ## How it works
 
-The application periodically captures only the screen rectangle selected by the user. Yellow and white chat rows are extracted by color and recognized locally with Tesseract OCR. Item names are matched against the bundled `mw2.wiki` item index to correct common OCR mistakes and load item icons.
+The application periodically captures only the window rectangle selected by the user. Yellow and white chat rows are extracted by color and recognized locally with Tesseract OCR. Item names are matched against the bundled `mw2.wiki` item index to correct common OCR mistakes. The item catalog and every icon currently available from the wiki are embedded in the EXE, so recognition and icon display work without an internet connection.
 
-The **Summary** tab shows aggregated drops and quest items. **Full Logs** keeps every accepted event. XP, SP, Adena, and active session time are displayed separately.
+Each top-level tracker tab has independent window/area settings, monitoring controls, statistics, timer, OCR state, and tracking history. Use the **+** tab to create another tracker. Double-click a tracker name, or right-click it and choose **Rename**, to change its name. Right-click and choose **Delete** to remove it.
+
+The **Summary** tab shows aggregated drops and quest items. **Full Logs** keeps every accepted event. XP, SP, Adena, and active session time are displayed separately. **Share** copies the currently displayed summary to the clipboard.
+
+A session remains active across Stop/Start cycles. **Clear All** closes the current session and begins a new one immediately if monitoring is running. Closing the application also closes every started session. Completed sessions are saved per tracker and listed newest-first in **Tracking history**; selecting one restores its totals, item lists, full logs, and elapsed time in read-only mode.
 
 Mouse-wheel activity inside the selected chat area starts a resynchronization. Rows displayed again after scrolling become a new baseline and are not added to the statistics a second time. Scrolling outside the selected area has no effect.
 
-Screenshots and recognized chat messages are not written to disk. Settings, the extracted OCR model, the refreshed item index, and downloaded icon cache are stored in `%LOCALAPPDATA%\LU4LootChatReader`.
+Screenshots are never written to disk. Tracker settings and completed tracking histories are stored in `%LOCALAPPDATA%\LU4LootChatReader`. OCR data is extracted there on first use. No icon download or catalog refresh is performed at runtime.
 
 ## Usage
 
 1. Start `LootChatReader.exe` and the LU4 client.
-2. Click **Select Window / Area**, select the LU4 window, and mark only the system chat message area.
-3. Click **Start**.
-4. Use **Stop** to pause monitoring and **Clear All** to reset the current statistics.
+2. Rename the initial tracker if needed, or click **+** to create trackers for additional game windows.
+3. In each tracker, click **Select Window / Area**, select its LU4 window, and mark only the system chat message area.
+4. Click **Start** independently in every tracker that should be monitored.
+5. Use **Stop** to pause a tracker and **Clear All** to archive and reset its current statistics.
 
 Windowed or borderless-windowed game mode is recommended. Exclusive fullscreen can prevent Windows screen capture from reading the game frame.
 

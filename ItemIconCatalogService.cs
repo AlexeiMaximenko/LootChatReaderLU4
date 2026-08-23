@@ -1,6 +1,4 @@
-using System.Collections.Concurrent;
-using System.Net;
-using System.Net.Http.Headers;
+using System.Reflection;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -8,16 +6,7 @@ namespace LootChatReader;
 
 internal sealed partial class ItemIconCatalogService : IDisposable
 {
-    private const string CatalogUrl =
-        "https://mw2.wiki/lu4-b-w-c/search/result?Search%5Bquery%5D=&Search%5Bsearch_type%5D=0&per_page=100&page={0}";
-    private static readonly Uri SiteBaseUri = new("https://mw2.wiki/");
-
-    private readonly HttpClient _httpClient;
-    private readonly string _indexPath;
-    private readonly string _iconsDirectory;
     private readonly object _catalogLock = new();
-    private readonly ConcurrentDictionary<string, Task<string?>> _iconDownloads =
-        new(StringComparer.OrdinalIgnoreCase);
 
     private Dictionary<string, ItemIconEntry> _itemsByName = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, ItemIconEntry> _itemsByNormalizedName = new(StringComparer.OrdinalIgnoreCase);
@@ -26,38 +15,8 @@ internal sealed partial class ItemIconCatalogService : IDisposable
 
     public ItemIconCatalogService(string dataDirectory)
     {
-        var cacheDirectory = Path.Combine(dataDirectory, "cache");
-        _iconsDirectory = Path.Combine(cacheDirectory, "icons");
-        _indexPath = Path.Combine(cacheDirectory, "item-icons.json");
-        Directory.CreateDirectory(_iconsDirectory);
-        EmbeddedResourceFiles.EnsureExtracted(
-            "LootChatReader.Resources.item-icons.json",
-            _indexPath);
-
-        _httpClient = new HttpClient(new HttpClientHandler
-        {
-            AutomaticDecompression = DecompressionMethods.All
-        })
-        {
-            Timeout = TimeSpan.FromSeconds(30)
-        };
-        _httpClient.DefaultRequestHeaders.UserAgent.Add(
-            new ProductInfoHeaderValue("LU4LootChatReader", "1.0"));
-
-        LoadCachedCatalog();
-    }
-
-    public bool ShouldRefresh(TimeSpan maximumAge)
-    {
-        try
-        {
-            return !File.Exists(_indexPath)
-                || DateTime.UtcNow - File.GetLastWriteTimeUtc(_indexPath) >= maximumAge;
-        }
-        catch
-        {
-            return true;
-        }
+        _ = dataDirectory;
+        LoadEmbeddedCatalog();
     }
 
     public int Count
@@ -69,50 +28,6 @@ internal sealed partial class ItemIconCatalogService : IDisposable
                 return _itemsByName.Count;
             }
         }
-    }
-
-    public async Task<int> SyncAsync(
-        IProgress<IconCatalogProgress>? progress = null,
-        CancellationToken cancellationToken = default)
-    {
-        var collected = new Dictionary<string, ItemIconEntry>(StringComparer.OrdinalIgnoreCase);
-        var firstHtml = await DownloadCatalogPageAsync(1, cancellationToken);
-        var totalItems = ReadTotalItemCount(firstHtml);
-        var totalPages = totalItems > 0 ? (int)Math.Ceiling(totalItems / 100d) : 0;
-
-        var firstPageRows = AddPageEntries(firstHtml, collected);
-        progress?.Report(new IconCatalogProgress(1, totalPages, collected.Count));
-
-        var maximumPage = totalPages > 0 ? totalPages : firstPageRows < 100 ? 1 : 500;
-        for (var page = 2; page <= maximumPage; page++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var html = await DownloadCatalogPageAsync(page, cancellationToken);
-            var pageCount = AddPageEntries(html, collected);
-            progress?.Report(new IconCatalogProgress(page, totalPages, collected.Count));
-
-            if (totalItems == 0 && pageCount < 100)
-            {
-                break;
-            }
-
-            await Task.Delay(100, cancellationToken);
-        }
-
-        if (collected.Count == 0)
-        {
-            throw new InvalidOperationException("The item catalog returned no usable entries.");
-        }
-
-        var entries = collected.Values.OrderBy(item => item.Name).ToArray();
-        Directory.CreateDirectory(Path.GetDirectoryName(_indexPath)!);
-        await File.WriteAllTextAsync(
-            _indexPath,
-            JsonSerializer.Serialize(entries, new JsonSerializerOptions { WriteIndented = true }),
-            cancellationToken);
-
-        ReplaceCatalog(entries);
-        return entries.Length;
     }
 
     public ItemIconMatch? Resolve(string recognizedName)
@@ -220,102 +135,44 @@ internal sealed partial class ItemIconCatalogService : IDisposable
             : null;
     }
 
-    public async Task<Bitmap?> LoadIconAsync(ItemIconEntry entry, CancellationToken cancellationToken = default)
+    public Task<Bitmap?> LoadIconAsync(ItemIconEntry entry, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (entry.IconPath.EndsWith("/none.png", StringComparison.OrdinalIgnoreCase))
         {
-            return null;
+            return Task.FromResult<Bitmap?>(null);
         }
 
-        var localPath = await _iconDownloads.GetOrAdd(
-            entry.IconPath,
-            path => DownloadIconWithFallbackAsync(path, cancellationToken));
-        if (localPath is null || !File.Exists(localPath))
+        var bitmap = LoadEmbeddedIcon(entry.IconPath);
+        if (bitmap is null)
         {
-            return null;
+            // Some icon paths published by the wiki currently return HTTP 404.
+            // Keep every catalog item usable offline with the embedded generic box.
+            bitmap = LoadEmbeddedIcon("/i64/etc_jewel_box_i00.png");
         }
 
-        var bytes = await File.ReadAllBytesAsync(localPath, cancellationToken);
-        using var stream = new MemoryStream(bytes);
-        using var source = Image.FromStream(stream);
-        return new Bitmap(source);
+        return Task.FromResult(bitmap);
     }
 
-    private async Task<string> DownloadCatalogPageAsync(int page, CancellationToken cancellationToken)
-    {
-        var url = string.Format(CatalogUrl, page);
-        return await _httpClient.GetStringAsync(url, cancellationToken);
-    }
-
-    private static int AddPageEntries(string html, IDictionary<string, ItemIconEntry> destination)
-    {
-        var parsed = 0;
-        foreach (Match anchorMatch in ItemAnchorRegex().Matches(html))
-        {
-            var body = anchorMatch.Groups[3].Value;
-            var iconMatch = IconRegex().Match(body);
-            var nameMatch = ItemNameRegex().Match(body);
-            if (!iconMatch.Success || !nameMatch.Success)
-            {
-                continue;
-            }
-
-            var name = WebUtility.HtmlDecode(StripTagsRegex().Replace(nameMatch.Groups[1].Value, string.Empty)).Trim();
-            name = WhitespaceRegex().Replace(name, " ");
-            if (name.Length == 0)
-            {
-                continue;
-            }
-
-            if (!int.TryParse(anchorMatch.Groups[2].Value, out var id))
-            {
-                continue;
-            }
-
-            var entry = new ItemIconEntry(
-                id,
-                name,
-                WebUtility.HtmlDecode(iconMatch.Groups[1].Value),
-                WebUtility.HtmlDecode(anchorMatch.Groups[1].Value));
-
-            parsed++;
-
-            if (!destination.ContainsKey(name))
-            {
-                destination[name] = entry;
-            }
-        }
-
-        return parsed;
-    }
-
-    private static int ReadTotalItemCount(string html)
-    {
-        var plainText = StripTagsRegex().Replace(WebUtility.HtmlDecode(html), " ");
-        plainText = WhitespaceRegex().Replace(plainText, " ");
-        var match = TotalItemsRegex().Match(plainText);
-        return match.Success && int.TryParse(match.Groups[1].Value, out var count) ? count : 0;
-    }
-
-    private async Task<string?> DownloadIconAsync(string iconPath, CancellationToken cancellationToken)
+    private static Bitmap? LoadEmbeddedIcon(string iconPath)
     {
         try
         {
-            var fileName = Path.GetFileName(new Uri(SiteBaseUri, iconPath).AbsolutePath);
+            var fileName = Path.GetFileName(new Uri(new Uri("https://mw2.wiki/"), iconPath).AbsolutePath);
             if (string.IsNullOrWhiteSpace(fileName))
             {
                 return null;
             }
 
-            var localPath = Path.Combine(_iconsDirectory, fileName);
-            if (File.Exists(localPath))
+            using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(
+                $"LootChatReader.Resources.ItemIcons.{fileName}");
+            if (stream is null)
             {
-                return localPath;
+                return null;
             }
 
-            var bytes = await _httpClient.GetByteArrayAsync(new Uri(SiteBaseUri, iconPath), cancellationToken);
-            await File.WriteAllBytesAsync(localPath, bytes, cancellationToken);
-            return localPath;
+            using var source = Image.FromStream(stream);
+            return new Bitmap(source);
         }
         catch
         {
@@ -323,33 +180,15 @@ internal sealed partial class ItemIconCatalogService : IDisposable
         }
     }
 
-    private async Task<string?> DownloadIconWithFallbackAsync(
-        string iconPath,
-        CancellationToken cancellationToken)
-    {
-        var localPath = await DownloadIconAsync(iconPath, cancellationToken);
-        if (localPath is not null)
-        {
-            return localPath;
-        }
-
-        // The wiki currently references reagent-cache PNGs that return HTTP 404.
-        // Use its available generic box icon so these items are not left blank.
-        return iconPath.Contains("unrefined_reagent_box_", StringComparison.OrdinalIgnoreCase)
-            ? await DownloadIconAsync("/i64/etc_jewel_box_i00.png", cancellationToken)
-            : null;
-    }
-
-    private void LoadCachedCatalog()
+    private void LoadEmbeddedCatalog()
     {
         try
         {
-            if (!File.Exists(_indexPath))
-            {
-                return;
-            }
-
-            var entries = JsonSerializer.Deserialize<ItemIconEntry[]>(File.ReadAllText(_indexPath));
+            using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(
+                "LootChatReader.Resources.item-icons.json");
+            var entries = stream is null
+                ? null
+                : JsonSerializer.Deserialize<ItemIconEntry[]>(stream);
             if (entries is { Length: > 0 })
             {
                 ReplaceCatalog(entries);
@@ -357,7 +196,7 @@ internal sealed partial class ItemIconCatalogService : IDisposable
         }
         catch
         {
-            // A damaged cache is ignored and can be rebuilt from the UI.
+            // A damaged embedded catalog is treated as unavailable.
         }
     }
 
@@ -465,26 +304,7 @@ internal sealed partial class ItemIconCatalogService : IDisposable
 
     public void Dispose()
     {
-        _httpClient.Dispose();
     }
-
-    [GeneratedRegex("<a\\s+[^>]*class=[\"'][^\"']*\\bitem-name\\b[^\"']*[\"'][^>]*href=[\"']([^\"']*/lu4-b-w-c/item/(\\d+)[^\"']*)[\"'][^>]*>(.*?)</a>", RegexOptions.IgnoreCase | RegexOptions.Singleline)]
-    private static partial Regex ItemAnchorRegex();
-
-    [GeneratedRegex("<img\\s+[^>]*src=[\"']([^\"']*/i64/[^\"']+\\.png)[\"']", RegexOptions.IgnoreCase | RegexOptions.Singleline)]
-    private static partial Regex IconRegex();
-
-    [GeneratedRegex("<span\\s+class=[\"']item-name__content[\"']>(.*?)(?:<span\\s+class=[\"']item-grade[\"']>|</span>)", RegexOptions.IgnoreCase | RegexOptions.Singleline)]
-    private static partial Regex ItemNameRegex();
-
-    [GeneratedRegex("<[^>]+>", RegexOptions.Singleline)]
-    private static partial Regex StripTagsRegex();
-
-    [GeneratedRegex("\\s+")]
-    private static partial Regex WhitespaceRegex();
-
-    [GeneratedRegex("(?:Предмет|Item)\\s*(\\d+)", RegexOptions.IgnoreCase)]
-    private static partial Regex TotalItemsRegex();
 
     [GeneratedRegex(@"\s+Tier\s+[A-Za-z0-9]+$", RegexOptions.IgnoreCase)]
     private static partial Regex TierSuffixRegex();
@@ -496,5 +316,3 @@ internal sealed partial class ItemIconCatalogService : IDisposable
 internal sealed record ItemIconEntry(int Id, string Name, string IconPath, string ItemPath);
 
 internal sealed record ItemIconMatch(ItemIconEntry Entry, bool IsFuzzyMatch);
-
-internal sealed record IconCatalogProgress(int Page, int TotalPages, int ItemCount);

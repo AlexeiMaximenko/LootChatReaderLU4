@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace LootChatReader;
 
@@ -14,8 +15,10 @@ internal sealed class AppSettings
     public string TargetWindowTitle { get; set; } = string.Empty;
     public string TargetWindowClass { get; set; } = string.Empty;
 
+    [JsonIgnore]
     public Rectangle CaptureRegion => new(CaptureX, CaptureY, CaptureWidth, CaptureHeight);
 
+    [JsonIgnore]
     public bool HasCaptureRegion => CaptureWidth >= 80
         && CaptureHeight >= 30
         && ReferenceWindowWidth > 0

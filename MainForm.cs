@@ -3,21 +3,22 @@ using System.Globalization;
 
 namespace LootChatReader;
 
-internal sealed class MainForm : Form
+internal sealed class TrackerView : UserControl
 {
-    private readonly string _settingsPath;
+    private readonly TrackerProfile _profile;
     private readonly AppSettings _settings;
+    private readonly Action _saveWorkspace;
     private readonly System.Windows.Forms.Timer _captureTimer;
     private readonly System.Windows.Forms.Timer _elapsedTimer;
     private readonly Stopwatch _elapsedStopwatch = new();
     private readonly EventSequenceTracker _eventTracker = new();
     private readonly ChatListMotionDetector _chatMotionDetector = new();
     private readonly MouseWheelMonitor _mouseWheelMonitor = new();
-    private readonly Icon? _applicationIcon;
     private readonly ItemIconCatalogService _iconCatalog;
     private readonly ImageList _itemImages = new();
-    private readonly Dictionary<string, SummaryEntry> _dropSummary = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, SummaryEntry> _questSummary = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, long> _dropSummary = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, long> _questSummary = new(StringComparer.OrdinalIgnoreCase);
+    private readonly List<HistoryLogEntry> _currentLogs = [];
 
     private readonly Button _selectRegionButton = new();
     private readonly Button _startStopButton = new();
@@ -28,6 +29,8 @@ internal sealed class MainForm : Form
     private readonly Label _xpValueLabel = new();
     private readonly Label _spValueLabel = new();
     private readonly Label _elapsedValueLabel = new();
+    private readonly Button _shareButton = new();
+    private readonly ComboBox _historyCombo = new();
     private readonly ListView _dropSummaryList = new();
     private readonly ListView _questSummaryList = new();
     private readonly ListView _eventsList = new();
@@ -36,7 +39,6 @@ internal sealed class MainForm : Form
     private OcrService? _ocrService;
     private bool _monitoring;
     private bool _captureInProgress;
-    private bool _catalogSyncing;
     private bool _primeNextCapture;
     private long _chatWheelRevision;
     private DateTime _ignoreChatWheelUntilUtc;
@@ -44,14 +46,19 @@ internal sealed class MainForm : Form
     private long _totalXp;
     private long _totalSp;
     private nint _targetWindowHandle;
+    private DateTime? _sessionStartedAt;
+    private Bitmap? _latestPreview;
+    private bool _refreshingHistory;
 
-    public MainForm()
+    public TrackerView(
+        TrackerProfile profile,
+        ItemIconCatalogService iconCatalog,
+        Action saveWorkspace)
     {
-        ApplicationDataPaths.EnsureRootDirectory();
-        _settingsPath = ApplicationDataPaths.SettingsPath;
-        _settings = AppSettings.Load(_settingsPath);
-        _iconCatalog = new ItemIconCatalogService(ApplicationDataPaths.RootDirectory);
-        _applicationIcon = EmbeddedResourceFiles.LoadIcon("LootChatReader.Resources.app.ico");
+        _profile = profile;
+        _settings = profile.Settings;
+        _iconCatalog = iconCatalog;
+        _saveWorkspace = saveWorkspace;
         _captureTimer = new System.Windows.Forms.Timer { Interval = 200 };
         _captureTimer.Tick += CaptureTimerOnTick;
         _elapsedTimer = new System.Windows.Forms.Timer { Interval = 1000 };
@@ -62,14 +69,7 @@ internal sealed class MainForm : Form
         _itemImages.ImageSize = new Size(32, 32);
         _itemImages.TransparentColor = Color.Transparent;
 
-        Text = $"LU4 Loot Chat Reader v{AppVersion.Display}";
-        if (_applicationIcon is not null)
-        {
-            Icon = _applicationIcon;
-        }
-        MinimumSize = new Size(780, 500);
-        Size = new Size(980, 650);
-        StartPosition = FormStartPosition.CenterScreen;
+        Dock = DockStyle.Fill;
         Font = new Font("Segoe UI", 9F);
 
         BuildInterface();
@@ -77,7 +77,8 @@ internal sealed class MainForm : Form
         UpdateStatistics();
         UpdateElapsedTime();
         UpdateControls();
-        Shown += MainFormOnShown;
+        RefreshHistoryChoices();
+        SetStatus($"Offline icon catalog loaded · {_iconCatalog.Count:N0} items", false);
     }
 
     private void BuildInterface()
@@ -85,7 +86,7 @@ internal sealed class MainForm : Form
         var topPanel = new TableLayoutPanel
         {
             Dock = DockStyle.Top,
-            Height = 132,
+            Height = 142,
             Padding = new Padding(12, 10, 12, 8),
             ColumnCount = 5,
             RowCount = 3
@@ -143,8 +144,30 @@ internal sealed class MainForm : Form
         topPanel.SetColumnSpan(statisticsPanel, 4);
         topPanel.Controls.Add(_statusLabel, 0, 2);
         topPanel.SetColumnSpan(_statusLabel, 4);
-        topPanel.Controls.Add(_preview, 4, 0);
-        topPanel.SetRowSpan(_preview, 3);
+        var historyPanel = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 2,
+            Margin = new Padding(0)
+        };
+        historyPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        historyPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        historyPanel.Controls.Add(new Label
+        {
+            Text = "Tracking history",
+            AutoSize = true,
+            ForeColor = Color.DimGray,
+            Margin = new Padding(0, 0, 0, 2)
+        }, 0, 0);
+        _historyCombo.Dock = DockStyle.Top;
+        _historyCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+        _historyCombo.SelectedIndexChanged += HistoryComboOnSelectedIndexChanged;
+        historyPanel.Controls.Add(_historyCombo, 0, 1);
+
+        topPanel.Controls.Add(historyPanel, 4, 0);
+        topPanel.Controls.Add(_preview, 4, 1);
+        topPanel.SetRowSpan(_preview, 2);
 
         ConfigureSummaryList(_dropSummaryList, _itemImages);
         ConfigureSummaryList(_questSummaryList, _itemImages);
@@ -191,10 +214,11 @@ internal sealed class MainForm : Form
             Dock = DockStyle.Bottom,
             Height = 34,
             Padding = new Padding(12, 8, 12, 0),
-            ColumnCount = 2,
+            ColumnCount = 3,
             RowCount = 1
         };
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
 
         var hint = new Label
@@ -209,8 +233,14 @@ internal sealed class MainForm : Form
         _elapsedValueLabel.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
         _elapsedValueLabel.ForeColor = Color.DimGray;
 
+        _shareButton.Text = "Share";
+        _shareButton.AutoSize = true;
+        _shareButton.Margin = new Padding(0, -3, 14, 0);
+        _shareButton.Click += (_, _) => CopySummaryToClipboard();
+
         footer.Controls.Add(hint, 0, 0);
-        footer.Controls.Add(_elapsedValueLabel, 1, 0);
+        footer.Controls.Add(_shareButton, 1, 0);
+        footer.Controls.Add(_elapsedValueLabel, 2, 0);
 
         Controls.Add(tabControl);
         Controls.Add(footer);
@@ -308,64 +338,6 @@ internal sealed class MainForm : Form
         _eventsList.HandleCreated += (_, _) => ResizeFullLogColumns();
     }
 
-    private async void MainFormOnShown(object? sender, EventArgs e)
-    {
-        if (_iconCatalog.Count > 0)
-        {
-            SetStatus($"Icon catalog loaded · {_iconCatalog.Count:N0} items", false);
-            await ApplyIconsToExistingRowsAsync();
-            if (!_iconCatalog.ShouldRefresh(TimeSpan.FromDays(7)))
-            {
-                return;
-            }
-        }
-
-        await SyncIconCatalogAsync(false);
-    }
-
-    private async Task SyncIconCatalogAsync(bool showErrors)
-    {
-        if (_catalogSyncing)
-        {
-            return;
-        }
-
-        _catalogSyncing = true;
-        UpdateControls();
-        try
-        {
-            var progress = new Progress<IconCatalogProgress>(value =>
-            {
-                var totalPages = value.TotalPages > 0 ? value.TotalPages.ToString() : "?";
-                SetStatus(
-                    $"Syncing icon catalog · page {value.Page}/{totalPages} · {value.ItemCount:N0} items",
-                    true);
-            });
-
-            var count = await _iconCatalog.SyncAsync(progress);
-            SetStatus($"Icon catalog ready · {count:N0} items", false);
-            await ApplyIconsToExistingRowsAsync();
-        }
-        catch (Exception exception)
-        {
-            SetStatus("Icon catalog could not be updated. OCR monitoring is still available.", false);
-            if (showErrors)
-            {
-                MessageBox.Show(
-                    this,
-                    exception.Message,
-                    "Icon Catalog Error",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Warning);
-            }
-        }
-        finally
-        {
-            _catalogSyncing = false;
-            UpdateControls();
-        }
-    }
-
     private async Task ApplyIconsToExistingRowsAsync()
     {
         var items = _eventsList.Items.Cast<ListViewItem>()
@@ -425,12 +397,13 @@ internal sealed class MainForm : Form
 
         var selectedWindow = windowPicker.SelectedWindow;
         StopMonitoring();
-        Hide();
+        var ownerForm = FindForm();
+        ownerForm?.Hide();
         ScreenCaptureService.RestoreAndActivate(selectedWindow.Handle);
         await Task.Delay(350);
         if (!ScreenCaptureService.TryGetWindowBounds(selectedWindow.Handle, out var windowBounds))
         {
-            Show();
+            ownerForm?.Show();
             MessageBox.Show(
                 this,
                 "The selected window is no longer available.",
@@ -452,8 +425,8 @@ internal sealed class MainForm : Form
 
         using var selector = new RegionSelectorForm(windowBounds, initialScreenRegion);
         var result = selector.ShowDialog();
-        Show();
-        Activate();
+        ownerForm?.Show();
+        ownerForm?.Activate();
         if (result != DialogResult.OK)
         {
             return;
@@ -469,7 +442,7 @@ internal sealed class MainForm : Form
             selector.SelectedRegion.Height);
         _settings.SetCaptureTarget(selectedWindow, relativeRegion);
         _targetWindowHandle = selectedWindow.Handle;
-        _settings.Save(_settingsPath);
+        _saveWorkspace();
         UpdateRegionLabel();
         SetStatus("Game window and chat area selected. Ready to start recognition.", false);
         UpdateControls();
@@ -524,6 +497,7 @@ internal sealed class MainForm : Form
         }
 
         _monitoring = true;
+        _sessionStartedAt ??= DateTime.Now;
         // Starting or resuming must never replay rows already visible in the chat.
         _primeNextCapture = true;
         _elapsedStopwatch.Start();
@@ -578,9 +552,12 @@ internal sealed class MainForm : Form
                 targetWindow.Handle,
                 _settings.CaptureRegion,
                 new Size(_settings.ReferenceWindowWidth, _settings.ReferenceWindowHeight)));
-            var oldPreview = _preview.Image;
-            _preview.Image = new Bitmap(screenshot);
-            oldPreview?.Dispose();
+            _latestPreview?.Dispose();
+            _latestPreview = new Bitmap(screenshot);
+            if (IsViewingCurrentSession)
+            {
+                _preview.Image = _latestPreview;
+            }
 
             var events = await Task.Run(() => _ocrService.ReadEvents(screenshot));
             events = CanonicalizeForTracking(events);
@@ -661,13 +638,16 @@ internal sealed class MainForm : Form
             return;
         }
 
-        var logItem = new ListViewItem(DateTime.Now.ToString("HH:mm:ss"));
-        logItem.SubItems.Add(detectedEvent.KindLabel);
-        logItem.SubItems.Add(detectedEvent.Value);
-        logItem.ToolTipText = detectedEvent.RawText;
-        logItem.Tag = detectedEvent.SummaryName;
-        _eventsList.Items.Add(logItem);
-        logItem.EnsureVisible();
+        var logEntry = new HistoryLogEntry
+        {
+            Time = DateTime.Now,
+            Type = detectedEvent.KindLabel,
+            Value = detectedEvent.Value,
+            RawText = detectedEvent.RawText,
+            SummaryName = detectedEvent.SummaryName
+        };
+        _currentLogs.Add(logEntry);
+        var logItem = IsViewingCurrentSession ? AddLogRow(logEntry, true) : null;
 
         ListViewItem? summaryItem = null;
 
@@ -699,7 +679,10 @@ internal sealed class MainForm : Form
                 break;
         }
 
-        UpdateStatistics();
+        if (IsViewingCurrentSession)
+        {
+            UpdateStatistics();
+        }
 
         if (iconMatch is not null)
         {
@@ -707,9 +690,9 @@ internal sealed class MainForm : Form
         }
     }
 
-    private static ListViewItem? AddToSummary(
+    private ListViewItem? AddToSummary(
         ListView listView,
-        IDictionary<string, SummaryEntry> entries,
+        IDictionary<string, long> entries,
         string name,
         long quantity)
     {
@@ -718,19 +701,26 @@ internal sealed class MainForm : Form
             return null;
         }
 
-        if (entries.TryGetValue(name, out var existing))
+        entries.TryGetValue(name, out var previousTotal);
+        var total = previousTotal + quantity;
+        entries[name] = total;
+        if (!IsViewingCurrentSession)
         {
-            existing.Total += quantity;
-            existing.Item.SubItems[1].Text = FormatNumber(existing.Total);
-            return existing.Item;
+            return null;
         }
 
-        var item = new ListViewItem(name);
-        item.SubItems.Add(FormatNumber(quantity));
-        item.Tag = name;
-        listView.Items.Add(item);
-        entries[name] = new SummaryEntry(item, quantity);
-        listView.Sort();
+        var item = listView.Items.Cast<ListViewItem>()
+            .FirstOrDefault(candidate => string.Equals(candidate.Tag as string, name, StringComparison.OrdinalIgnoreCase));
+        if (item is null)
+        {
+            item = AddSummaryRow(listView, name, total);
+            listView.Sort();
+        }
+        else
+        {
+            item.SubItems[1].Text = FormatNumber(total);
+        }
+
         return item;
     }
 
@@ -764,6 +754,7 @@ internal sealed class MainForm : Form
 
     private void ClearData()
     {
+        ArchiveCurrentSession();
         _eventTracker.BeginResynchronization();
         _chatMotionDetector.Reset();
         _eventsList.Items.Clear();
@@ -771,22 +762,26 @@ internal sealed class MainForm : Form
         _questSummaryList.Items.Clear();
         _dropSummary.Clear();
         _questSummary.Clear();
+        _currentLogs.Clear();
         _totalAdena = 0;
         _totalXp = 0;
         _totalSp = 0;
-        UpdateStatistics();
         _elapsedStopwatch.Reset();
         if (_monitoring)
         {
+            _sessionStartedAt = DateTime.Now;
             _elapsedStopwatch.Start();
             _elapsedTimer.Start();
         }
         else
         {
+            _sessionStartedAt = null;
             _elapsedTimer.Stop();
         }
 
-        UpdateElapsedTime();
+        SelectCurrentSession();
+        RenderSelectedSession();
+        _saveWorkspace();
     }
 
     private void MouseWheelMonitorOnWheelScrolled(object? sender, MouseWheelActivity activity)
@@ -811,16 +806,17 @@ internal sealed class MainForm : Form
 
     private void UpdateElapsedTime()
     {
-        var elapsed = _elapsedStopwatch.Elapsed;
+        var elapsed = SelectedHistory?.Elapsed ?? _elapsedStopwatch.Elapsed;
         var totalHours = (long)elapsed.TotalHours;
         _elapsedValueLabel.Text = $"Elapsed: {totalHours:00}:{elapsed.Minutes:00}:{elapsed.Seconds:00}";
     }
 
     private void UpdateStatistics()
     {
-        _adenaValueLabel.Text = FormatNumber(_totalAdena);
-        _xpValueLabel.Text = FormatNumber(_totalXp);
-        _spValueLabel.Text = FormatNumber(_totalSp);
+        var history = SelectedHistory;
+        _adenaValueLabel.Text = FormatNumber(history?.Adena ?? _totalAdena);
+        _xpValueLabel.Text = FormatNumber(history?.Xp ?? _totalXp);
+        _spValueLabel.Text = FormatNumber(history?.Sp ?? _totalSp);
     }
 
     private static string FormatNumber(long value)
@@ -837,35 +833,285 @@ internal sealed class MainForm : Form
 
     private void UpdateControls()
     {
+        var current = IsViewingCurrentSession;
         _startStopButton.Text = _monitoring ? "Stop" : "Start";
-        _startStopButton.Enabled = _monitoring || _settings.HasCaptureRegion;
-        _selectRegionButton.Enabled = !_monitoring;
+        _startStopButton.Enabled = current && (_monitoring || _settings.HasCaptureRegion);
+        _selectRegionButton.Enabled = current && !_monitoring;
+        _clearButton.Enabled = current;
     }
 
     private void SetStatus(string text, bool active)
     {
+        if (SelectedHistory is not null
+            && (text.StartsWith("Monitoring", StringComparison.Ordinal)
+                || text.Equals("Monitoring stopped.", StringComparison.Ordinal)))
+        {
+            return;
+        }
+
         _statusLabel.Text = text;
         _statusLabel.ForeColor = active ? Color.ForestGreen : Color.DimGray;
     }
 
-    protected override void OnFormClosed(FormClosedEventArgs e)
+    private bool IsViewingCurrentSession => SelectedHistory is null;
+
+    private TrackingHistory? SelectedHistory =>
+        (_historyCombo.SelectedItem as HistoryChoice)?.History;
+
+    private void HistoryComboOnSelectedIndexChanged(object? sender, EventArgs e)
     {
-        _captureTimer.Stop();
-        _captureTimer.Dispose();
-        _elapsedTimer.Stop();
-        _elapsedTimer.Dispose();
-        _mouseWheelMonitor.Dispose();
-        _applicationIcon?.Dispose();
-        _ocrService?.Dispose();
-        _iconCatalog.Dispose();
-        _itemImages.Dispose();
-        _preview.Image?.Dispose();
-        base.OnFormClosed(e);
+        if (_refreshingHistory)
+        {
+            return;
+        }
+
+        RenderSelectedSession();
     }
 
-    private sealed class SummaryEntry(ListViewItem item, long total)
+    private void RefreshHistoryChoices(Guid? selectedHistoryId = null)
     {
-        public ListViewItem Item { get; } = item;
-        public long Total { get; set; } = total;
+        _refreshingHistory = true;
+        try
+        {
+            _historyCombo.Items.Clear();
+            _historyCombo.Items.Add(new HistoryChoice(null));
+            foreach (var history in _profile.Histories.OrderByDescending(item => item.EndedAt))
+            {
+                _historyCombo.Items.Add(new HistoryChoice(history));
+            }
+
+            var selectedIndex = 0;
+            if (selectedHistoryId.HasValue)
+            {
+                for (var index = 1; index < _historyCombo.Items.Count; index++)
+                {
+                    if ((_historyCombo.Items[index] as HistoryChoice)?.History?.Id == selectedHistoryId)
+                    {
+                        selectedIndex = index;
+                        break;
+                    }
+                }
+            }
+
+            _historyCombo.SelectedIndex = selectedIndex;
+        }
+        finally
+        {
+            _refreshingHistory = false;
+        }
+    }
+
+    private void SelectCurrentSession()
+    {
+        if (_historyCombo.Items.Count == 0)
+        {
+            RefreshHistoryChoices();
+        }
+
+        _historyCombo.SelectedIndex = 0;
+    }
+
+    private void RenderSelectedSession()
+    {
+        _eventsList.BeginUpdate();
+        _dropSummaryList.BeginUpdate();
+        _questSummaryList.BeginUpdate();
+        try
+        {
+            _eventsList.Items.Clear();
+            _dropSummaryList.Items.Clear();
+            _questSummaryList.Items.Clear();
+
+            var history = SelectedHistory;
+            var logs = history?.Logs ?? _currentLogs;
+            var items = history?.Items
+                ?? _dropSummary.OrderBy(pair => pair.Key)
+                    .Select(pair => new HistoryItem { Name = pair.Key, Total = pair.Value })
+                    .ToList();
+            var questItems = history?.QuestItems
+                ?? _questSummary.OrderBy(pair => pair.Key)
+                    .Select(pair => new HistoryItem { Name = pair.Key, Total = pair.Value })
+                    .ToList();
+
+            foreach (var log in logs)
+            {
+                AddLogRow(log, false);
+            }
+
+            foreach (var item in items)
+            {
+                AddSummaryRow(_dropSummaryList, item.Name, item.Total);
+            }
+
+            foreach (var item in questItems)
+            {
+                AddSummaryRow(_questSummaryList, item.Name, item.Total);
+            }
+
+            _dropSummaryList.Sort();
+            _questSummaryList.Sort();
+            _preview.Image = history is null ? _latestPreview : null;
+            UpdateStatistics();
+            UpdateElapsedTime();
+            UpdateControls();
+            if (history is not null)
+            {
+                SetStatus($"Viewing history · {history.DisplayName}", false);
+            }
+            else
+            {
+                SetStatus(_monitoring ? "Monitoring is running." : "Current session.", _monitoring);
+            }
+        }
+        finally
+        {
+            _eventsList.EndUpdate();
+            _dropSummaryList.EndUpdate();
+            _questSummaryList.EndUpdate();
+        }
+
+        _ = ApplyIconsToExistingRowsAsync();
+    }
+
+    private ListViewItem AddLogRow(HistoryLogEntry log, bool ensureVisible)
+    {
+        var item = new ListViewItem(log.Time.ToString("HH:mm:ss"));
+        item.SubItems.Add(log.Type);
+        item.SubItems.Add(log.Value);
+        item.ToolTipText = log.RawText;
+        item.Tag = log.SummaryName;
+        _eventsList.Items.Add(item);
+        if (ensureVisible)
+        {
+            item.EnsureVisible();
+        }
+
+        return item;
+    }
+
+    private static ListViewItem AddSummaryRow(ListView list, string name, long total)
+    {
+        var item = new ListViewItem(name);
+        item.SubItems.Add(FormatNumber(total));
+        item.Tag = name;
+        list.Items.Add(item);
+        return item;
+    }
+
+    private bool ArchiveCurrentSession()
+    {
+        if (!_sessionStartedAt.HasValue)
+        {
+            return false;
+        }
+
+        var history = new TrackingHistory
+        {
+            StartedAt = _sessionStartedAt.Value,
+            EndedAt = DateTime.Now,
+            ElapsedTicks = _elapsedStopwatch.Elapsed.Ticks,
+            Adena = _totalAdena,
+            Xp = _totalXp,
+            Sp = _totalSp,
+            Items = _dropSummary.OrderBy(pair => pair.Key)
+                .Select(pair => new HistoryItem { Name = pair.Key, Total = pair.Value })
+                .ToList(),
+            QuestItems = _questSummary.OrderBy(pair => pair.Key)
+                .Select(pair => new HistoryItem { Name = pair.Key, Total = pair.Value })
+                .ToList(),
+            Logs = _currentLogs.Select(log => new HistoryLogEntry
+            {
+                Time = log.Time,
+                Type = log.Type,
+                Value = log.Value,
+                RawText = log.RawText,
+                SummaryName = log.SummaryName
+            }).ToList()
+        };
+        _profile.Histories.Insert(0, history);
+        _sessionStartedAt = null;
+        RefreshHistoryChoices();
+        return true;
+    }
+
+    private void CopySummaryToClipboard()
+    {
+        var history = SelectedHistory;
+        var elapsed = history?.Elapsed ?? _elapsedStopwatch.Elapsed;
+        var adena = history?.Adena ?? _totalAdena;
+        var xp = history?.Xp ?? _totalXp;
+        var sp = history?.Sp ?? _totalSp;
+        var items = history?.Items
+            ?? _dropSummary.OrderBy(pair => pair.Key)
+                .Select(pair => new HistoryItem { Name = pair.Key, Total = pair.Value })
+                .ToList();
+        var questItems = history?.QuestItems
+            ?? _questSummary.OrderBy(pair => pair.Key)
+                .Select(pair => new HistoryItem { Name = pair.Key, Total = pair.Value })
+                .ToList();
+        var totalHours = (long)elapsed.TotalHours;
+        var lines = new List<string>
+        {
+            $"timer: {totalHours:00}:{elapsed.Minutes:00}:{elapsed.Seconds:00}",
+            string.Empty,
+            $"Adena: {FormatNumber(adena)}",
+            $"Exp: {FormatNumber(xp)}",
+            $"Sp: {FormatNumber(sp)}",
+            string.Empty,
+            "Items:"
+        };
+        lines.AddRange(items.OrderBy(item => item.Name).Select(item => $"{item.Name}: {FormatNumber(item.Total)}"));
+        lines.Add(string.Empty);
+        lines.Add("Quest items:");
+        lines.AddRange(questItems.OrderBy(item => item.Name).Select(item => $"{item.Name}: {FormatNumber(item.Total)}"));
+
+        try
+        {
+            Clipboard.SetText(string.Join(Environment.NewLine, lines));
+            SetStatus("Summary copied to the clipboard.", false);
+        }
+        catch (Exception exception)
+        {
+            MessageBox.Show(this, exception.Message, "Clipboard Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    public void PrepareForShutdown()
+    {
+        StopMonitoring();
+        if (ArchiveCurrentSession())
+        {
+            _saveWorkspace();
+        }
+    }
+
+    public void StopForRemoval()
+    {
+        StopMonitoring();
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _captureTimer.Stop();
+            _captureTimer.Dispose();
+            _elapsedTimer.Stop();
+            _elapsedTimer.Dispose();
+            _mouseWheelMonitor.Dispose();
+            _ocrService?.Dispose();
+            _itemImages.Dispose();
+            _preview.Image = null;
+            _latestPreview?.Dispose();
+        }
+
+        base.Dispose(disposing);
+    }
+
+    private sealed class HistoryChoice(TrackingHistory? history)
+    {
+        public TrackingHistory? History { get; } = history;
+
+        public override string ToString() => History?.DisplayName ?? "Current session";
     }
 }
