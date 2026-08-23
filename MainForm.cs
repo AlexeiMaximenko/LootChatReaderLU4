@@ -73,6 +73,7 @@ internal sealed class TrackerView : UserControl
         Font = new Font("Segoe UI", 9F);
 
         BuildInterface();
+        NormalizeProfileHistories();
         UpdateRegionLabel();
         UpdateStatistics();
         UpdateElapsedTime();
@@ -621,7 +622,7 @@ internal sealed class TrackerView : UserControl
             iconMatch = _iconCatalog.Resolve(detectedEvent.SummaryName);
             if (iconMatch is not null)
             {
-                detectedEvent = CanonicalizeEvent(detectedEvent, iconMatch.Entry.Name);
+                detectedEvent = ApplyCatalogMetadata(detectedEvent, iconMatch.Entry);
             }
         }
 
@@ -736,6 +737,17 @@ internal sealed class TrackerView : UserControl
         };
     }
 
+    private static DetectedEvent ApplyCatalogMetadata(
+        DetectedEvent detectedEvent,
+        ItemIconEntry catalogEntry)
+    {
+        var canonical = CanonicalizeEvent(detectedEvent, catalogEntry.Name);
+        return canonical with
+        {
+            Kind = CatalogItemClassifier.Classify(canonical, catalogEntry)
+        };
+    }
+
     private IReadOnlyList<DetectedEvent> CanonicalizeForTracking(IReadOnlyList<DetectedEvent> events)
     {
         return events.Select(detectedEvent =>
@@ -748,8 +760,81 @@ internal sealed class TrackerView : UserControl
             var match = _iconCatalog.Resolve(detectedEvent.SummaryName);
             return match is null
                 ? detectedEvent
-                : CanonicalizeEvent(detectedEvent, match.Entry.Name);
+                : ApplyCatalogMetadata(detectedEvent, match.Entry);
         }).ToArray();
+    }
+
+    private void NormalizeProfileHistories()
+    {
+        var changed = false;
+        foreach (var history in _profile.Histories)
+        {
+            var combinedItems = history.Items
+                .Select(item => (Item: item, WasQuest: false))
+                .Concat(history.QuestItems.Select(item => (Item: item, WasQuest: true)))
+                .GroupBy(item => item.Item.Name, StringComparer.OrdinalIgnoreCase)
+                .Select(group =>
+                {
+                    var name = group.First().Item.Name;
+                    var match = _iconCatalog.Resolve(name);
+                    return new
+                    {
+                        Name = match?.Entry.Name ?? name,
+                        Total = group.Sum(item => item.Item.Total),
+                        IsQuest = match?.Entry.IsQuestItem ?? group.First().WasQuest
+                    };
+                })
+                .ToArray();
+
+            var normalizedItems = combinedItems
+                .Where(item => !item.IsQuest)
+                .OrderBy(item => item.Name)
+                .Select(item => new HistoryItem { Name = item.Name, Total = item.Total })
+                .ToList();
+            var normalizedQuestItems = combinedItems
+                .Where(item => item.IsQuest)
+                .OrderBy(item => item.Name)
+                .Select(item => new HistoryItem { Name = item.Name, Total = item.Total })
+                .ToList();
+            if (!HistoryItemsEqual(history.Items, normalizedItems)
+                || !HistoryItemsEqual(history.QuestItems, normalizedQuestItems))
+            {
+                history.Items = normalizedItems;
+                history.QuestItems = normalizedQuestItems;
+                changed = true;
+            }
+
+            foreach (var log in history.Logs.Where(log => !log.Type.Equals("XP / SP", StringComparison.OrdinalIgnoreCase)))
+            {
+                var match = _iconCatalog.Resolve(log.SummaryName);
+                if (match is null)
+                {
+                    continue;
+                }
+
+                var normalizedType = match.Entry.IsQuestItem ? "Quest item" : "Drop";
+                if (!log.Type.Equals(normalizedType, StringComparison.Ordinal))
+                {
+                    log.Type = normalizedType;
+                    changed = true;
+                }
+            }
+        }
+
+        if (changed)
+        {
+            _saveWorkspace();
+        }
+    }
+
+    private static bool HistoryItemsEqual(
+        IReadOnlyList<HistoryItem> left,
+        IReadOnlyList<HistoryItem> right)
+    {
+        return left.Count == right.Count
+            && left.Zip(right).All(pair =>
+                pair.First.Name.Equals(pair.Second.Name, StringComparison.OrdinalIgnoreCase)
+                && pair.First.Total == pair.Second.Total);
     }
 
     private void ClearData()

@@ -116,6 +116,13 @@ internal static class Program
             ?? throw new InvalidOperationException("The embedded item catalog is missing.");
         var entries = System.Text.Json.JsonSerializer.Deserialize<ItemIconEntry[]>(stream)
             ?? throw new InvalidOperationException("The embedded item catalog is empty.");
+        var untypedEntries = entries.Where(entry => string.IsNullOrWhiteSpace(entry.Type)).ToArray();
+        if (untypedEntries.Length > 0)
+        {
+            throw new InvalidOperationException(
+                $"Embedded catalog entries without a type: {string.Join(", ", untypedEntries.Take(10).Select(entry => entry.Name))}");
+        }
+
         var resources = assembly.GetManifestResourceNames().ToHashSet(StringComparer.OrdinalIgnoreCase);
         var unavailableAtSource = entries
             .Select(entry => entry.IconPath)
@@ -138,6 +145,8 @@ internal static class Program
             StringComparison.OrdinalIgnoreCase));
         Console.WriteLine(
             $"EMBEDDED ICONS: {iconCount}; CATALOG ENTRIES: {entries.Length}; " +
+            $"TYPES: {entries.Select(entry => entry.Type).Distinct(StringComparer.OrdinalIgnoreCase).Count()}; " +
+            $"QUEST ITEMS: {entries.Count(entry => entry.IsQuestItem)}; " +
             $"SOURCE FALLBACKS: {unavailableAtSource.Length}");
     }
 
@@ -233,6 +242,41 @@ internal static class Program
         }
 
         Console.WriteLine("REJECT: -");
+
+        var stem = catalog.Resolve("Stem")
+            ?? throw new InvalidOperationException("Stem was not resolved for the type test.");
+        var monsterEyeMeat = catalog.Resolve("Monster Eye Meat")
+            ?? throw new InvalidOperationException("Monster Eye Meat was not resolved for the type test.");
+        if (stem.Entry.Type != "Other / Material"
+            || monsterEyeMeat.Entry.Type != "Quest Item")
+        {
+            throw new InvalidOperationException("Catalog item types were not loaded correctly.");
+        }
+
+        var earnedStem = new DetectedEvent(
+            DetectedEventKind.QuestItem,
+            "Stem",
+            "You have earned Stem.",
+            0,
+            "Stem",
+            1,
+            0,
+            0,
+            0);
+        var obtainedQuestItem = earnedStem with
+        {
+            Kind = DetectedEventKind.Drop,
+            Value = "Monster Eye Meat",
+            RawText = "You have obtained Monster Eye Meat.",
+            SummaryName = "Monster Eye Meat"
+        };
+        if (CatalogItemClassifier.Classify(earnedStem, stem.Entry) != DetectedEventKind.Drop
+            || CatalogItemClassifier.Classify(obtainedQuestItem, monsterEyeMeat.Entry) != DetectedEventKind.QuestItem)
+        {
+            throw new InvalidOperationException("Catalog-based item classification failed.");
+        }
+
+        Console.WriteLine("TYPE: earned Stem -> Drop; obtained Monster Eye Meat -> Quest item");
 
         var reagent = catalog.Resolve("Ashen Reagent Cache")
             ?? throw new InvalidOperationException("Ashen Reagent Cache was not resolved for the icon test.");

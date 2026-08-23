@@ -1,6 +1,6 @@
 # LootChatReaderLU4
 
-Current version: **1.06**
+Current version: **1.07**
 
 LootChatReaderLU4 is a local Windows application that reads the LU4 system chat from a selected screen area and keeps loot statistics.
 
@@ -13,7 +13,7 @@ LootChatReaderLU4 is a local Windows application that reads the LU4 system chat 
 
 ## How it works
 
-The application periodically captures only the window rectangle selected by the user. Yellow and white chat rows are extracted by color and recognized locally with Tesseract OCR. Item names are matched against the bundled `mw2.wiki` item index to correct common OCR mistakes. The item catalog and every icon currently available from the wiki are embedded in the EXE, so recognition and icon display work without an internet connection.
+The application periodically captures only the window rectangle selected by the user. Yellow and white chat rows are extracted by color and recognized locally with Tesseract OCR. Item names are matched against the bundled `mw2.wiki` item index to correct common OCR mistakes. The catalog also contains the wiki item type and subtype, such as `Quest Item`, `Other`, or `Other / Material`. Summary placement is based strictly on that catalog type rather than on whether the chat used `obtained` or `earned`. The item catalog and every icon currently available from the wiki are embedded in the EXE, so recognition and icon display work without an internet connection.
 
 Each top-level tracker tab has independent window/area settings, monitoring controls, statistics, timer, OCR state, and tracking history. Use the **+** tab to create another tracker. Double-click a tracker name, or right-click it and choose **Rename**, to change its name. Right-click and choose **Delete** to remove it.
 

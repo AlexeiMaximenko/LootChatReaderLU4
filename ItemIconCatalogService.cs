@@ -313,6 +313,14 @@ internal sealed partial class ItemIconCatalogService : IDisposable
     private static partial Regex RaritySuffixRegex();
 }
 
-internal sealed record ItemIconEntry(int Id, string Name, string IconPath, string ItemPath);
+internal sealed record ItemIconEntry(
+    int Id,
+    string Name,
+    string IconPath,
+    string ItemPath,
+    string Type = "")
+{
+    public bool IsQuestItem => Type.Equals("Quest Item", StringComparison.OrdinalIgnoreCase);
+}
 
 internal sealed record ItemIconMatch(ItemIconEntry Entry, bool IsFuzzyMatch);
