@@ -32,6 +32,24 @@ internal static class Program
             return;
         }
 
+        if (args.Length >= 1 && args[0].Equals("--adena-test", StringComparison.OrdinalIgnoreCase))
+        {
+            RunAdenaTest();
+            return;
+        }
+
+        if (args.Length >= 1 && args[0].Equals("--overlay-test", StringComparison.OrdinalIgnoreCase))
+        {
+            RunOverlayTest();
+            return;
+        }
+
+        if (args.Length >= 2 && args[0].Equals("--overlay-render-test", StringComparison.OrdinalIgnoreCase))
+        {
+            RunOverlayRenderTest(args[1], args.Length >= 3 && args[2].Equals("details", StringComparison.OrdinalIgnoreCase));
+            return;
+        }
+
         if (args.Length >= 1 && args[0].Equals("--catalog-resolve-test", StringComparison.OrdinalIgnoreCase))
         {
             RunCatalogResolveTest();
@@ -208,6 +226,152 @@ internal static class Program
             }
         }
     }
+
+    private static void RunAdenaTest()
+    {
+        foreach (var verb in new[] { "obtained", "earned" })
+        {
+            var detected = OcrService.ParseDiagnosticText($"You have {verb} 4 Adena.", TextMask.Yellow)
+                ?? throw new InvalidOperationException($"The {verb} Adena diagnostic line was not parsed.");
+            if (detected.Adena != 4
+                || detected.Kind != DetectedEventKind.Drop
+                || !detected.SummaryName.Equals("Adena", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException($"The {verb} Adena diagnostic line was parsed as an item.");
+            }
+        }
+
+        using var catalog = new ItemIconCatalogService(ApplicationDataPaths.RootDirectory);
+        var profile = new TrackerProfile { Name = "Adena migration" };
+        profile.Histories.Add(new TrackingHistory
+        {
+            StartedAt = DateTime.Now.AddMinutes(-1),
+            EndedAt = DateTime.Now,
+            Items =
+            [
+                new HistoryItem { Name = "Adena", Total = 4 },
+                new HistoryItem { Name = "Stem", Total = 1 }
+            ]
+        });
+        using (var tracker = new TrackerView(profile, catalog, () => { }))
+        {
+            var history = profile.Histories.Single();
+            if (history.Adena != 4
+                || history.Items.Any(item => item.Name.Equals("Adena", StringComparison.OrdinalIgnoreCase))
+                || history.Items.Single(item => item.Name == "Stem").Total != 1)
+            {
+                throw new InvalidOperationException("Historical Adena was not removed from the item list.");
+            }
+        }
+
+        Console.WriteLine("ADENA: obtained/earned -> counter; historical item -> counter; item rows: 0");
+    }
+
+    private static void RunOverlayTest()
+    {
+        var settings = new AppSettings();
+        if (settings.OverlayPlacement != OverlayPlacement.Off)
+        {
+            throw new InvalidOperationException("Overlay must be off by default.");
+        }
+
+        using var stats = new StatsOverlayForm();
+        using var details = new LootOverlayForm();
+        var statsHandle = stats.Handle;
+        var detailsHandle = details.Handle;
+        var statsStyle = GetWindowLongPtr(statsHandle, -20).ToInt64();
+        const long wsExLayered = 0x00080000;
+        const long wsExToolWindow = 0x00000080;
+        const long wsExNoActivate = 0x08000000;
+        const long wsExTransparent = 0x00000020;
+        if ((statsStyle & wsExLayered) == 0
+            || (statsStyle & wsExToolWindow) == 0
+            || (statsStyle & wsExNoActivate) == 0
+            || (statsStyle & wsExTransparent) == 0
+            || details.MinimumSize.Height != 120
+            || details.MaximumSize.Height != 1200)
+        {
+            throw new InvalidOperationException("Overlay window styles or resize limits are incorrect.");
+        }
+
+        stats.InteractionEnabled = true;
+        if ((GetWindowLongPtr(statsHandle, -20).ToInt64() & wsExTransparent) != 0)
+        {
+            throw new InvalidOperationException("Shift interaction did not disable click-through mode.");
+        }
+        stats.InteractionEnabled = false;
+        if ((GetWindowLongPtr(statsHandle, -20).ToInt64() & wsExTransparent) == 0)
+        {
+            throw new InvalidOperationException("Releasing Shift did not restore click-through mode.");
+        }
+
+        Console.WriteLine("OVERLAY: default off; click-through without Shift; interactive with Shift; height 120..1200");
+    }
+
+    private static void RunOverlayRenderTest(string outputPath, bool showDetails)
+    {
+        using var target = new Form
+        {
+            Text = "Overlay diagnostic target",
+            FormBorderStyle = FormBorderStyle.None,
+            StartPosition = FormStartPosition.Manual,
+            Bounds = new Rectangle(120, 100, 900, 620),
+            BackColor = Color.FromArgb(48, 58, 68),
+            ShowInTaskbar = false
+        };
+        var targetHandle = target.Handle;
+        var settings = new AppSettings
+        {
+            CaptureX = 90,
+            CaptureY = 120,
+            CaptureWidth = 330,
+            CaptureHeight = 160,
+            ReferenceWindowWidth = 900,
+            ReferenceWindowHeight = 620,
+            TargetProcessName = "diagnostic",
+            OverlayPlacement = OverlayPlacement.Right,
+            OverlayDetailsHeight = 230
+        };
+        using var overlay = new GameOverlayController(settings, () => targetHandle, () => { });
+        overlay.UpdateSnapshot(new OverlaySnapshot(
+            123456,
+            789012,
+            34567,
+            [new OverlayItem("Animal Skin", 12), new OverlayItem("Stem", 8), new OverlayItem("Iron Ore", 3)],
+            [new OverlayItem("Monster Eye Meat", 7), new OverlayItem("Basilisk's Gizzard", 2)]));
+        if (showDetails)
+        {
+            overlay.ShowDetailsForDiagnostic(false);
+        }
+
+        var timer = new System.Windows.Forms.Timer { Interval = 1000 };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            using var screenshot = new Bitmap(target.Width, target.Height, System.Drawing.Imaging.PixelFormat.Format24bppRgb);
+            using (var graphics = Graphics.FromImage(screenshot))
+            {
+                graphics.CopyFromScreen(target.Left, target.Top, 0, 0, screenshot.Size);
+            }
+            screenshot.Save(outputPath, System.Drawing.Imaging.ImageFormat.Png);
+            Console.WriteLine(overlay.GetDiagnosticState());
+            target.Close();
+        };
+        target.Shown += (_, _) =>
+        {
+            target.TopMost = true;
+            target.TopMost = false;
+            target.Activate();
+            target.BringToFront();
+            timer.Start();
+        };
+        Application.Run(target);
+        timer.Dispose();
+        Console.WriteLine($"OVERLAY RENDER: {outputPath}");
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
+    private static extern nint GetWindowLongPtr(nint window, int index);
 
     private static void RunCatalogResolveTest()
     {

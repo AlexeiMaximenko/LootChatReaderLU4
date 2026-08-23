@@ -210,10 +210,13 @@ internal sealed partial class OcrService : IDisposable
             var kind = verb.Equals("earned", StringComparison.OrdinalIgnoreCase)
                 ? DetectedEventKind.QuestItem
                 : DetectedEventKind.Drop;
-            var adena = kind == DetectedEventKind.Drop
-                && summaryName.Equals("adena", StringComparison.OrdinalIgnoreCase)
-                    ? quantity
-                    : 0;
+            var adena = summaryName.Equals("adena", StringComparison.OrdinalIgnoreCase)
+                ? quantity
+                : 0;
+            if (adena > 0)
+            {
+                kind = DetectedEventKind.Drop;
+            }
             return value.Length == 0
                 ? null
                 : new DetectedEvent(kind, value, line.Text, line.Top, summaryName, quantity, 0, 0, adena);
@@ -242,6 +245,11 @@ internal sealed partial class OcrService : IDisposable
             xpValue,
             spValue,
             0);
+    }
+
+    internal static DetectedEvent? ParseDiagnosticText(string text, TextMask textMask)
+    {
+        return ParseLine(new OcrLine(NormalizeText(text), Rectangle.Empty, textMask));
     }
 
     private static string NormalizeText(string value)

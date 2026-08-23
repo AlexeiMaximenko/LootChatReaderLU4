@@ -14,6 +14,8 @@ internal sealed class AppSettings
     public string TargetProcessName { get; set; } = string.Empty;
     public string TargetWindowTitle { get; set; } = string.Empty;
     public string TargetWindowClass { get; set; } = string.Empty;
+    public OverlayPlacement OverlayPlacement { get; set; } = OverlayPlacement.Off;
+    public int OverlayDetailsHeight { get; set; } = 320;
 
     [JsonIgnore]
     public Rectangle CaptureRegion => new(CaptureX, CaptureY, CaptureWidth, CaptureHeight);
@@ -69,4 +71,13 @@ internal sealed class AppSettings
             // The selected area remains active until this application run ends.
         }
     }
+}
+
+internal enum OverlayPlacement
+{
+    Off,
+    Left,
+    Top,
+    Right,
+    Bottom
 }

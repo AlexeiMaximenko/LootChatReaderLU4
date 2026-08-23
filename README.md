@@ -1,13 +1,12 @@
 # LootChatReaderLU4
 
-Current version: **1.07**
+Current version: **1.08**
 
 LootChatReaderLU4 is a local Windows application that reads the LU4 system chat from a selected screen area and keeps loot statistics.
 
 ## Recognized messages
 
-- yellow `You have obtained ...` — regular drops;
-- yellow `You have earned ...` — quest items;
+- yellow `You have obtained ...` and `You have earned ...` — received-item events (the bundled catalog type decides the summary table);
 - white `You have acquired ... XP and ... SP` — experience and SP;
 - Adena is counted separately from item drops.
 
@@ -18,6 +17,8 @@ The application periodically captures only the window rectangle selected by the 
 Each top-level tracker tab has independent window/area settings, monitoring controls, statistics, timer, OCR state, and tracking history. Use the **+** tab to create another tracker. Double-click a tracker name, or right-click it and choose **Rename**, to change its name. Right-click and choose **Delete** to remove it.
 
 The **Summary** tab shows aggregated drops and quest items. **Full Logs** keeps every accepted event. XP, SP, Adena, and active session time are displayed separately. **Share** copies the currently displayed summary to the clipboard.
+
+The arrow buttons around the capture preview place a transparent in-game overlay on the selected side of the chat area. The overlay is **Off** by default; clicking the currently selected arrow again turns it off. It shows Adena, XP, and SP, while **More** opens either the normal-item or quest-item list for the current session. Hold **Shift** to interact with every overlay control: open a menu, choose a list, close it, scroll it, or drag the bottom edge to change its height. Without Shift, all overlay windows are click-through and game input passes through them. The detail height is saved independently for each tracker.
 
 A session remains active across Stop/Start cycles. **Clear All** closes the current session and begins a new one immediately if monitoring is running. Closing the application also closes every started session. Completed sessions are saved per tracker and listed newest-first in **Tracking history**; selecting one restores its totals, item lists, full logs, and elapsed time in read-only mode.
 
@@ -32,6 +33,7 @@ Screenshots are never written to disk. Tracker settings and completed tracking h
 3. In each tracker, click **Select Window / Area**, select its LU4 window, and mark only the system chat message area.
 4. Click **Start** independently in every tracker that should be monitored.
 5. Use **Stop** to pause a tracker and **Clear All** to archive and reset its current statistics.
+6. Optionally click an arrow around the preview to enable the in-game overlay; hold **Shift** while using it.
 
 Windowed or borderless-windowed game mode is recommended. Exclusive fullscreen can prevent Windows screen capture from reading the game frame.
 

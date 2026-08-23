@@ -35,8 +35,10 @@ internal sealed class TrackerView : UserControl
     private readonly ListView _questSummaryList = new();
     private readonly ListView _eventsList = new();
     private readonly PictureBox _preview = new();
+    private readonly Dictionary<OverlayPlacement, Button> _overlayPlacementButtons = [];
 
     private OcrService? _ocrService;
+    private GameOverlayController? _overlayController;
     private bool _monitoring;
     private bool _captureInProgress;
     private bool _primeNextCapture;
@@ -73,6 +75,11 @@ internal sealed class TrackerView : UserControl
         Font = new Font("Segoe UI", 9F);
 
         BuildInterface();
+        _overlayController = new GameOverlayController(
+            _settings,
+            () => _targetWindowHandle,
+            _saveWorkspace);
+        UpdateOverlayPlacementButtons();
         NormalizeProfileHistories();
         UpdateRegionLabel();
         UpdateStatistics();
@@ -87,7 +94,7 @@ internal sealed class TrackerView : UserControl
         var topPanel = new TableLayoutPanel
         {
             Dock = DockStyle.Top,
-            Height = 142,
+            Height = 182,
             Padding = new Padding(12, 10, 12, 8),
             ColumnCount = 5,
             RowCount = 3
@@ -96,10 +103,10 @@ internal sealed class TrackerView : UserControl
         topPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         topPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         topPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        topPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 185));
+        topPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 215));
         topPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
-        topPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
-        topPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+        topPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 80));
+        topPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
 
         _selectRegionButton.Text = "Select Window / Area";
         _selectRegionButton.AutoSize = true;
@@ -167,8 +174,9 @@ internal sealed class TrackerView : UserControl
         historyPanel.Controls.Add(_historyCombo, 0, 1);
 
         topPanel.Controls.Add(historyPanel, 4, 0);
-        topPanel.Controls.Add(_preview, 4, 1);
-        topPanel.SetRowSpan(_preview, 2);
+        var overlaySelector = CreateOverlayPlacementSelector();
+        topPanel.Controls.Add(overlaySelector, 4, 1);
+        topPanel.SetRowSpan(overlaySelector, 2);
 
         ConfigureSummaryList(_dropSummaryList, _itemImages);
         ConfigureSummaryList(_questSummaryList, _itemImages);
@@ -246,6 +254,81 @@ internal sealed class TrackerView : UserControl
         Controls.Add(tabControl);
         Controls.Add(footer);
         Controls.Add(topPanel);
+    }
+
+    private Control CreateOverlayPlacementSelector()
+    {
+        var panel = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 3,
+            RowCount = 3,
+            Margin = new Padding(0),
+            Padding = new Padding(0)
+        };
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 28));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 28));
+        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
+        panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
+
+        Button AddPlacementButton(string text, OverlayPlacement placement, int column, int row)
+        {
+            var button = new Button
+            {
+                Text = text,
+                Dock = DockStyle.Fill,
+                FlatStyle = FlatStyle.Flat,
+                Margin = new Padding(2),
+                Tag = placement,
+                TabStop = false
+            };
+            button.FlatAppearance.BorderSize = 1;
+            button.Click += OverlayPlacementButtonOnClick;
+            _overlayPlacementButtons[placement] = button;
+            panel.Controls.Add(button, column, row);
+            return button;
+        }
+
+        AddPlacementButton("▲", OverlayPlacement.Top, 1, 0);
+        AddPlacementButton("◀", OverlayPlacement.Left, 0, 1);
+        AddPlacementButton("▶", OverlayPlacement.Right, 2, 1);
+        AddPlacementButton("▼", OverlayPlacement.Bottom, 1, 2);
+        panel.Controls.Add(_preview, 1, 1);
+        return panel;
+    }
+
+    private void OverlayPlacementButtonOnClick(object? sender, EventArgs e)
+    {
+        if (sender is not Button { Tag: OverlayPlacement requested })
+        {
+            return;
+        }
+
+        var placement = _settings.OverlayPlacement == requested
+            ? OverlayPlacement.Off
+            : requested;
+        _overlayController?.SetPlacement(placement);
+        UpdateOverlayPlacementButtons();
+        UpdateRegionLabel();
+        _saveWorkspace();
+    }
+
+    private void UpdateOverlayPlacementButtons()
+    {
+        foreach (var (placement, button) in _overlayPlacementButtons)
+        {
+            var selected = _settings.OverlayPlacement == placement;
+            button.BackColor = selected ? Color.FromArgb(0, 120, 215) : SystemColors.Control;
+            button.ForeColor = selected ? Color.White : SystemColors.ControlText;
+            button.FlatAppearance.BorderColor = selected ? Color.FromArgb(0, 84, 153) : SystemColors.ControlDark;
+        }
+
+        var overlayText = _settings.OverlayPlacement == OverlayPlacement.Off
+            ? "Off"
+            : _settings.OverlayPlacement.ToString();
+        _preview.AccessibleDescription = $"Overlay: {overlayText}. Click the selected direction again to turn it off.";
     }
 
     private static Control CreateStatisticBlock(string title, Label valueLabel)
@@ -616,6 +699,17 @@ internal sealed class TrackerView : UserControl
 
     private void AddEvent(DetectedEvent detectedEvent)
     {
+        if (detectedEvent.Quantity > 0
+            && detectedEvent.SummaryName.Equals("Adena", StringComparison.OrdinalIgnoreCase))
+        {
+            detectedEvent = detectedEvent with
+            {
+                Kind = DetectedEventKind.Drop,
+                Adena = detectedEvent.Quantity,
+                SummaryName = "Adena"
+            };
+        }
+
         ItemIconMatch? iconMatch = null;
         if (detectedEvent.Kind != DetectedEventKind.Experience)
         {
@@ -689,6 +783,8 @@ internal sealed class TrackerView : UserControl
         {
             _ = ApplyIconAsync(iconMatch.Entry, logItem, summaryItem);
         }
+
+        UpdateOverlaySnapshot();
     }
 
     private ListViewItem? AddToSummary(
@@ -698,6 +794,11 @@ internal sealed class TrackerView : UserControl
         long quantity)
     {
         if (string.IsNullOrWhiteSpace(name) || quantity <= 0)
+        {
+            return null;
+        }
+
+        if (name.Equals("Adena", StringComparison.OrdinalIgnoreCase))
         {
             return null;
         }
@@ -742,6 +843,17 @@ internal sealed class TrackerView : UserControl
         ItemIconEntry catalogEntry)
     {
         var canonical = CanonicalizeEvent(detectedEvent, catalogEntry.Name);
+        if (catalogEntry.Name.Equals("Adena", StringComparison.OrdinalIgnoreCase)
+            && canonical.Quantity > 0)
+        {
+            return canonical with
+            {
+                Kind = DetectedEventKind.Drop,
+                Adena = canonical.Quantity,
+                SummaryName = "Adena"
+            };
+        }
+
         return canonical with
         {
             Kind = CatalogItemClassifier.Classify(canonical, catalogEntry)
@@ -786,13 +898,24 @@ internal sealed class TrackerView : UserControl
                 })
                 .ToArray();
 
+            var misplacedAdena = combinedItems
+                .Where(item => item.Name.Equals("Adena", StringComparison.OrdinalIgnoreCase))
+                .Sum(item => item.Total);
+            if (misplacedAdena > 0)
+            {
+                history.Adena += misplacedAdena;
+                changed = true;
+            }
+
             var normalizedItems = combinedItems
-                .Where(item => !item.IsQuest)
+                .Where(item => !item.IsQuest
+                    && !item.Name.Equals("Adena", StringComparison.OrdinalIgnoreCase))
                 .OrderBy(item => item.Name)
                 .Select(item => new HistoryItem { Name = item.Name, Total = item.Total })
                 .ToList();
             var normalizedQuestItems = combinedItems
-                .Where(item => item.IsQuest)
+                .Where(item => item.IsQuest
+                    && !item.Name.Equals("Adena", StringComparison.OrdinalIgnoreCase))
                 .OrderBy(item => item.Name)
                 .Select(item => new HistoryItem { Name = item.Name, Total = item.Total })
                 .ToList();
@@ -902,6 +1025,25 @@ internal sealed class TrackerView : UserControl
         _adenaValueLabel.Text = FormatNumber(history?.Adena ?? _totalAdena);
         _xpValueLabel.Text = FormatNumber(history?.Xp ?? _totalXp);
         _spValueLabel.Text = FormatNumber(history?.Sp ?? _totalSp);
+        UpdateOverlaySnapshot();
+    }
+
+    private void UpdateOverlaySnapshot()
+    {
+        _overlayController?.UpdateSnapshot(new OverlaySnapshot(
+            _totalAdena,
+            _totalXp,
+            _totalSp,
+            _dropSummary
+                .Where(pair => !pair.Key.Equals("Adena", StringComparison.OrdinalIgnoreCase))
+                .OrderBy(pair => pair.Key)
+                .Select(pair => new OverlayItem(pair.Key, pair.Value))
+                .ToArray(),
+            _questSummary
+                .Where(pair => !pair.Key.Equals("Adena", StringComparison.OrdinalIgnoreCase))
+                .OrderBy(pair => pair.Key)
+                .Select(pair => new OverlayItem(pair.Key, pair.Value))
+                .ToArray()));
     }
 
     private static string FormatNumber(long value)
@@ -911,9 +1053,12 @@ internal sealed class TrackerView : UserControl
 
     private void UpdateRegionLabel()
     {
+        var overlay = _settings.OverlayPlacement == OverlayPlacement.Off
+            ? "off"
+            : _settings.OverlayPlacement.ToString().ToLowerInvariant();
         _regionLabel.Text = _settings.HasCaptureRegion
-            ? $"Window: {_settings.TargetProcessName} · area: {_settings.CaptureWidth}×{_settings.CaptureHeight}"
-            : "Window and area not selected";
+            ? $"Window: {_settings.TargetProcessName} · area: {_settings.CaptureWidth}×{_settings.CaptureHeight} · overlay: {overlay}"
+            : $"Window and area not selected · overlay: {overlay}";
     }
 
     private void UpdateControls()
@@ -1184,6 +1329,7 @@ internal sealed class TrackerView : UserControl
             _elapsedTimer.Stop();
             _elapsedTimer.Dispose();
             _mouseWheelMonitor.Dispose();
+            _overlayController?.Dispose();
             _ocrService?.Dispose();
             _itemImages.Dispose();
             _preview.Image = null;
