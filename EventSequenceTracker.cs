@@ -45,7 +45,9 @@ internal sealed class EventSequenceTracker
             && recognizedLineMotion != ChatListMotion.ScrollUp
             && recognizedLineMotion != ChatListMotion.Stationary
             && (recognizedLineMotion == ChatListMotion.ScrollDown
-                || visualConfidence >= 0.58);
+                || visualConfidence >= 0.58
+                || (visualConfidence >= 0.45
+                    && current.Any(item => item.Kind == DetectedEventKind.Experience)));
         if (!chatAdvancedUp)
         {
             _baseline = current.ToArray();

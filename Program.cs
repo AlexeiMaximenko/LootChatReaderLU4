@@ -886,6 +886,28 @@ internal static class Program
             return bitmap;
         }
 
+        static Bitmap CreateGrayOnlyFrame(int offset)
+        {
+            var bitmap = new Bitmap(360, 160, System.Drawing.Imaging.PixelFormat.Format24bppRgb);
+            using var graphics = Graphics.FromImage(bitmap);
+            graphics.Clear(Color.FromArgb(24, 27, 25));
+            graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.SingleBitPerPixelGridFit;
+            using var font = new Font("Segoe UI", 12F, FontStyle.Regular, GraphicsUnit.Pixel);
+            using var gray = new SolidBrush(Color.FromArgb(185, 185, 185));
+            var lines = new[]
+            {
+                "Power of the spirits enabled.",
+                "Use Soulshot (D-Grade).",
+                "You have acquired 600 XP and 42 SP.",
+                "Power of the spirits enabled."
+            };
+            for (var index = 0; index < lines.Length; index++)
+            {
+                graphics.DrawString(lines[index], font, gray, 8, 35 + index * 20 + offset);
+            }
+            return bitmap;
+        }
+
         using var first = CreateFrame(0);
         using var moved = CreateFrame(-15);
         var detector = new ChatFrameMotionDetector();
@@ -905,7 +927,28 @@ internal static class Program
             throw new InvalidOperationException($"Stationary chat was reported as shift {stationary}.");
         }
 
-        Console.WriteLine($"FRAME MOTION: shift={shift}; confidence={detector.LastConfidence:F2}; stationary=0");
+        using var grayFirst = CreateGrayOnlyFrame(0);
+        using var grayMoved = CreateGrayOnlyFrame(-15);
+        var grayDetector = new ChatFrameMotionDetector();
+        grayDetector.Observe(grayFirst);
+        var grayShift = grayDetector.Observe(grayMoved);
+        var grayLineBounds = OcrImagePreprocessor.FindLineBounds(grayFirst, TextMask.White);
+        using var grayOcr = new OcrService(ApplicationDataPaths.RootDirectory);
+        var grayExperience = grayOcr.ReadEvents(grayFirst)
+            .SingleOrDefault(item => item.Kind == DetectedEventKind.Experience);
+        if (Math.Abs(grayShift + 15) > 2
+            || grayLineBounds.Count == 0
+            || grayExperience?.Xp != 600
+            || grayExperience.Sp != 42)
+        {
+            throw new InvalidOperationException(
+                $"Gray XP/SP text was not tracked: shift={grayShift}, lines={grayLineBounds.Count}, " +
+                $"event={grayExperience?.Value ?? "none"}, confidence={grayDetector.LastConfidence:F2}.");
+        }
+
+        Console.WriteLine(
+            $"FRAME MOTION: colored={shift}; gray={grayShift}; " +
+            $"gray lines={grayLineBounds.Count}; stationary=0");
     }
 
     private static void RunSequenceTest()
@@ -1005,6 +1048,26 @@ internal static class Program
                 ChatListMotion.Unknown,
                 0.4),
             0);
+
+        var experience = new DetectedEvent(
+            DetectedEventKind.Experience,
+            "600 XP, 42 SP",
+            "You have acquired 600 XP and 42 SP.",
+            140,
+            string.Empty,
+            0,
+            600,
+            42,
+            0);
+        tracker.SetBaselineImmediately(Array.Empty<DetectedEvent>());
+        RequireCount(
+            "gray XP/SP without yellow loot",
+            tracker.Observe(
+                new[] { experience },
+                -15,
+                ChatListMotion.Unknown,
+                0.46),
+            1);
 
         Console.WriteLine("SEQUENCE: OK");
     }

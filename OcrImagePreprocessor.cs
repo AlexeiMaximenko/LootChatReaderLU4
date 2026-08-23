@@ -213,12 +213,16 @@ internal static class OcrImagePreprocessor
         // Channel ratio checks reject white highlights from the game background.
         var redGreen = red - green;
         var greenBlue = green - blue;
-        return red >= 175
+        var warmBeige = red >= 175
             && green >= 160
             && blue >= 130
             && redGreen >= 5
             && redGreen <= 32
             && greenBlue >= 8
             && greenBlue <= 65;
+        var maximum = Math.Max(red, Math.Max(green, blue));
+        var minimum = Math.Min(red, Math.Min(green, blue));
+        var neutralGray = minimum >= 145 && maximum - minimum <= 24;
+        return warmBeige || neutralGray;
     }
 }

@@ -1,6 +1,6 @@
 # LootChatReaderLU4
 
-Current version: **1.16**
+Current version: **1.17**
 
 LootChatReaderLU4 is a local Windows application that reads the LU4 system chat from a selected screen area and keeps loot statistics.
 
@@ -24,7 +24,7 @@ All overlay panels are permanently transparent to mouse input. There is no `More
 
 A session remains active across Stop/Start cycles. **Clear All** closes the current session and begins a new one immediately if monitoring is running. Closing the application also closes every started session. Completed sessions are saved per tracker and listed newest-first in **Tracking history**; selecting one restores its totals, item lists, full logs, and elapsed time in read-only mode.
 
-OCR differences alone are never counted as loot. The application first confirms that the chat text layer moved upward, then matches every previously visible row at its shifted position and accepts only unmatched new row instances. A stationary chat therefore adds nothing even if the game background, spell effects, or text antialiasing change. Consecutive identical rows are still counted separately because the older instance moves upward while the new instance appears below it. Mouse-wheel activity inside the selected chat starts a short baseline resynchronization so scrolling history cannot replay old loot.
+OCR differences alone are never counted as loot. The application first confirms that the chat text layer moved upward, then matches every previously visible row at its shifted position and accepts only unmatched new row instances. Both colored item lines and neutral-gray XP/SP/system lines participate in motion detection, so an XP/SP event does not require a yellow drop beside it. A stationary chat therefore adds nothing even if the game background, spell effects, or text antialiasing change. Consecutive identical rows are still counted separately because the older instance moves upward while the new instance appears below it. Mouse-wheel activity inside the selected chat starts a short baseline resynchronization so scrolling history cannot replay old loot.
 
 Screenshots are never written to disk. Tracker settings and completed tracking histories are stored in `%LOCALAPPDATA%\LU4LootChatReader`. OCR data is extracted there on first use. No icon download or catalog refresh is performed at runtime.
 

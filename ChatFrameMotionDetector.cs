@@ -176,7 +176,10 @@ internal sealed class ChatFrameMotionDetector
             && blue >= 95
             && red - green >= 28
             && blue - green >= 18;
-        return warmWhite || yellow || greenText || magenta;
+        var maximum = Math.Max(red, Math.Max(green, blue));
+        var minimum = Math.Min(red, Math.Min(green, blue));
+        var neutralGray = minimum >= 135 && maximum - minimum <= 28;
+        return warmWhite || neutralGray || yellow || greenText || magenta;
     }
 
     private readonly record struct MotionScore(double Score, int Intersection);
