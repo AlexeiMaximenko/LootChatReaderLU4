@@ -1,6 +1,6 @@
 # LootChatReaderLU4
 
-Current version: **1.14**
+Current version: **1.15**
 
 LootChatReaderLU4 is a local Windows application that reads the LU4 system chat from a selected screen area and keeps loot statistics.
 
@@ -18,7 +18,9 @@ Each top-level tracker tab has independent window/area settings, monitoring cont
 
 The **Summary** tab shows aggregated drops and quest items. **Full Logs** keeps every accepted event. XP, SP, Adena, and active session time are displayed separately. **Share** copies the currently displayed summary to the clipboard.
 
-The arrow buttons around the capture preview place a transparent in-game overlay on the selected side of the chat area. The overlay is **Off** by default; clicking the currently selected arrow again turns it off. Adena, XP, SP, and **More** are arranged horizontally above/below the chat and vertically to its left/right. Text is aligned toward the chat edge for left/right placement. The main panel exactly matches the selected chat width when placed above/below and its height when placed left/right. **More** opens either the normal-item or quest-item list for the current session. Hold **Shift** to interact with every overlay control: open a menu, choose a list, close it, scroll it, drag the detail header to move it, or drag its right/bottom edges to resize it. `More` turns light green while Shift is physically detected. Shift is observed through Windows Raw Input, with a global hook and physical-key polling as fallbacks. Physical mouse actions are routed through both a global low-level hook and a 25 ms physical-button poll, so the active game cannot consume the click before the overlay handles it. Related child/render windows of the selected game are treated as the same foreground client. Without Shift, all overlay windows are click-through and game input passes through them. Each overlay is natively owned by its selected game window: only the foreground game's overlay is raised, so multiple tracked clients do not cover unrelated applications or each other. Detail position and size are saved independently for each tracker.
+The **Overlay Settings** section configures all in-game panels for the current tracker. Adena, XP, and SP can be placed to the left, above, to the right, or below the selected chat area. The obtained-items and quest-items panels each have an independent visually selected rectangle inside the game window; that rectangle controls both position and size. Their visibility is controlled by the two checkboxes on the tracker main page.
+
+All overlay panels are permanently transparent to mouse input. There is no `More` button, Shift mode, in-game menu, dragging, resizing, or input hook. Position and size are changed only through **Overlay Settings**, so the overlay cannot interfere with L2 controls. Each overlay is natively owned by its selected game window: only the foreground game's panels are raised, so multiple tracked clients do not cover unrelated applications or each other.
 
 A session remains active across Stop/Start cycles. **Clear All** closes the current session and begins a new one immediately if monitoring is running. Closing the application also closes every started session. Completed sessions are saved per tracker and listed newest-first in **Tracking history**; selecting one restores its totals, item lists, full logs, and elapsed time in read-only mode.
 
@@ -28,12 +30,12 @@ Screenshots are never written to disk. Tracker settings and completed tracking h
 
 ## Usage
 
-1. Start `LootChatReader.exe`, accept the Windows administrator prompt, and start the LU4 client. Matching the game's elevated integrity level is required for reliable global Shift/mouse input over the active client.
+1. Start `LootChatReader.exe` and the LU4 client.
 2. Rename the initial tracker if needed, or click **+** to create trackers for additional game windows.
 3. In each tracker, click **Select Window / Area**, select its LU4 window, and mark only the system chat message area.
 4. Click **Start** independently in every tracker that should be monitored.
 5. Use **Stop** to pause a tracker and **Clear All** to archive and reset its current statistics.
-6. Optionally click an arrow around the preview to enable the in-game overlay; hold **Shift** while using it.
+6. Optionally open **Overlay Settings** to select panel placement and size, then enable the item and/or quest-item overlay checkboxes on the tracker page.
 
 Windowed or borderless-windowed game mode is recommended. Exclusive fullscreen can prevent Windows screen capture from reading the game frame.
 

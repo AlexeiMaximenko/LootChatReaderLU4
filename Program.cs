@@ -69,6 +69,18 @@ internal static class Program
             return;
         }
 
+        if (args.Length >= 2 && args[0].Equals("--overlay-settings-render-test", StringComparison.OrdinalIgnoreCase))
+        {
+            RunOverlaySettingsRenderTest(args[1]);
+            return;
+        }
+
+        if (args.Length >= 2 && args[0].Equals("--tracker-render-test", StringComparison.OrdinalIgnoreCase))
+        {
+            RunTrackerRenderTest(args[1]);
+            return;
+        }
+
         if (args.Length >= 1 && args[0].Equals("--window-unavailable-test", StringComparison.OrdinalIgnoreCase))
         {
             RunWindowUnavailableTest();
@@ -211,11 +223,19 @@ internal static class Program
                 Name = "Window 1",
                 Settings = new AppSettings
                 {
-                    OverlayDetailsX = 420,
-                    OverlayDetailsY = 180,
-                    OverlayDetailsWidth = 480,
-                    OverlayDetailsHeight = 360,
-                    OverlayDetailsPositionSet = true
+                    OverlayPlacement = OverlayPlacement.Top,
+                    ShowItemsOverlay = true,
+                    ItemsOverlayX = 420,
+                    ItemsOverlayY = 180,
+                    ItemsOverlayWidth = 480,
+                    ItemsOverlayHeight = 360,
+                    ItemsOverlayRegionSet = true,
+                    ShowQuestItemsOverlay = true,
+                    QuestItemsOverlayX = 40,
+                    QuestItemsOverlayY = 220,
+                    QuestItemsOverlayWidth = 300,
+                    QuestItemsOverlayHeight = 240,
+                    QuestItemsOverlayRegionSet = true
                 }
             };
             first.Histories.Add(new TrackingHistory
@@ -254,8 +274,10 @@ internal static class Program
                 || loadedHistory.Adena != 1234
                 || loadedHistory.Items.Single().Total != 3
                 || loadedHistory.Logs.Single().SummaryName != "Stem"
-                || loaded.Profiles.Single(profile => profile.Name == "Window 1").Settings.OverlayDetailsWidth != 480
-                || loaded.Profiles.Single(profile => profile.Name == "Window 1").Settings.OverlayDetailsX != 420)
+                || loaded.Profiles.Single(profile => profile.Name == "Window 1").Settings.ItemsOverlayWidth != 480
+                || loaded.Profiles.Single(profile => profile.Name == "Window 1").Settings.ItemsOverlayX != 420
+                || !loaded.Profiles.Single(profile => profile.Name == "Window 1").Settings.ShowQuestItemsOverlay
+                || loaded.Profiles.Single(profile => profile.Name == "Window 1").Settings.QuestItemsOverlayHeight != 240)
             {
                 throw new InvalidOperationException("Workspace/history round-trip failed.");
             }
@@ -318,6 +340,10 @@ internal static class Program
         {
             throw new InvalidOperationException("Overlay must be off by default.");
         }
+        if (settings.ShowItemsOverlay || settings.ShowQuestItemsOverlay)
+        {
+            throw new InvalidOperationException("Loot overlays must be off by default.");
+        }
 
         using var stats = new StatsOverlayForm();
         using var details = new LootOverlayForm();
@@ -335,47 +361,21 @@ internal static class Program
             || (statsStyle & wsExToolWindow) == 0
             || (statsStyle & wsExNoActivate) == 0
             || (statsStyle & wsExTransparent) == 0
-            || details.MinimumSize.Width != 220
-            || details.MinimumSize.Height != 120
-            || details.MaximumSize.Width != 1200
-            || details.MaximumSize.Height != 1200
             || horizontalSize.Width != captureSize.Width
             || horizontalSize.Height != StatsOverlayForm.HorizontalHeight
             || verticalSize.Width != StatsOverlayForm.SideWidth
             || verticalSize.Height != captureSize.Height)
         {
-            throw new InvalidOperationException("Overlay window styles or resize limits are incorrect.");
+            throw new InvalidOperationException("Overlay window styles or capture-relative sizes are incorrect.");
         }
 
-        stats.InteractionEnabled = true;
-        if ((GetWindowLongPtr(statsHandle, -20).ToInt64() & wsExTransparent) != 0)
+        if ((GetWindowLongPtr(statsHandle, -20).ToInt64() & wsExTransparent) == 0
+            || (GetWindowLongPtr(detailsHandle, -20).ToInt64() & wsExTransparent) == 0)
         {
-            throw new InvalidOperationException("Shift interaction did not disable click-through mode.");
-        }
-        stats.InteractionEnabled = false;
-        if ((GetWindowLongPtr(statsHandle, -20).ToInt64() & wsExTransparent) == 0)
-        {
-            throw new InvalidOperationException("Releasing Shift did not restore click-through mode.");
+            throw new InvalidOperationException("Overlay panels must remain permanently click-through.");
         }
 
-        var directClickReceived = false;
-        stats.MoreClicked += () => directClickReceived = true;
-        stats.SetLayeredBounds(new Rectangle(100, 100, StatsOverlayForm.SideWidth, 96));
-        stats.ShowInactive();
-        var morePoint = new Point(stats.Left + 12, stats.Top + 78);
-        var downHandled = stats.TryHandleGlobalMouse(
-            new GlobalMouseActivity(GlobalMouseAction.LeftDown, morePoint),
-            shiftPressed: true);
-        var upHandled = stats.TryHandleGlobalMouse(
-            new GlobalMouseActivity(GlobalMouseAction.LeftUp, morePoint),
-            shiftPressed: true);
-        stats.Hide();
-        if (!downHandled || !upHandled || !directClickReceived)
-        {
-            throw new InvalidOperationException("Direct global Shift-click routing did not activate More.");
-        }
-
-        Console.WriteLine("OVERLAY: click-through style + direct global Shift-click routing; capture-matched main panel");
+        Console.WriteLine("OVERLAY: permanently click-through; no More/Shift input; configured loot rectangles");
     }
 
     private static void RunOverlayIsolationTest()
@@ -409,10 +409,6 @@ internal static class Program
         };
         using var firstOverlay = new GameOverlayController(Settings(), () => firstHandle, () => { });
         using var secondOverlay = new GameOverlayController(Settings(), () => secondHandle, () => { });
-        if (!GlobalShiftKeyState.RawInputAvailable || !GlobalOverlayMouseRouter.HookAvailable)
-        {
-            throw new InvalidOperationException("Raw keyboard or global mouse input could not be registered.");
-        }
         firstTarget.Show();
         secondTarget.Show();
         firstTarget.Activate();
@@ -477,7 +473,11 @@ internal static class Program
             ReferenceWindowHeight = 620,
             TargetProcessName = "diagnostic",
             OverlayPlacement = placement,
-            OverlayDetailsHeight = 230
+            ItemsOverlayX = 560,
+            ItemsOverlayY = 330,
+            ItemsOverlayWidth = 300,
+            ItemsOverlayHeight = 230,
+            ItemsOverlayRegionSet = true
         };
         using var overlay = new GameOverlayController(settings, () => targetHandle, () => { });
         overlay.UpdateSnapshot(new OverlaySnapshot(
@@ -543,6 +543,79 @@ internal static class Program
         timer.Dispose();
         foregroundWindow?.Dispose();
         Console.WriteLine($"OVERLAY RENDER: {outputPath}");
+    }
+
+    private static void RunOverlaySettingsRenderTest(string outputPath)
+    {
+        var settings = new AppSettings
+        {
+            OverlayPlacement = OverlayPlacement.Top,
+            ItemsOverlayX = 460,
+            ItemsOverlayY = 120,
+            ItemsOverlayWidth = 340,
+            ItemsOverlayHeight = 260,
+            ItemsOverlayRegionSet = true,
+            QuestItemsOverlayX = 60,
+            QuestItemsOverlayY = 360,
+            QuestItemsOverlayWidth = 320,
+            QuestItemsOverlayHeight = 220,
+            QuestItemsOverlayRegionSet = true
+        };
+        using var form = new OverlaySettingsForm(
+            settings,
+            (_, _) => Task.FromResult<Rectangle?>(null));
+        CaptureFormForDiagnostic(form, outputPath);
+    }
+
+    private static void RunTrackerRenderTest(string outputPath)
+    {
+        using var catalog = new ItemIconCatalogService(ApplicationDataPaths.RootDirectory);
+        var profile = new TrackerProfile
+        {
+            Name = "Diagnostic",
+            Settings = new AppSettings
+            {
+                OverlayPlacement = OverlayPlacement.Right,
+                ShowItemsOverlay = true
+            }
+        };
+        using var form = new Form
+        {
+            Text = "Tracker diagnostic",
+            StartPosition = FormStartPosition.Manual,
+            Bounds = new Rectangle(100, 80, 1000, 700),
+            ShowInTaskbar = false
+        };
+        form.Controls.Add(new TrackerView(profile, catalog, () => { }));
+        CaptureFormForDiagnostic(form, outputPath);
+    }
+
+    private static void CaptureFormForDiagnostic(Form form, string outputPath)
+    {
+        var timer = new System.Windows.Forms.Timer { Interval = 500 };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            using var screenshot = new Bitmap(
+                form.Width,
+                form.Height,
+                System.Drawing.Imaging.PixelFormat.Format24bppRgb);
+            using (var graphics = Graphics.FromImage(screenshot))
+            {
+                graphics.CopyFromScreen(form.Left, form.Top, 0, 0, screenshot.Size);
+            }
+            screenshot.Save(outputPath, System.Drawing.Imaging.ImageFormat.Png);
+            form.Close();
+        };
+        form.Shown += (_, _) =>
+        {
+            form.TopMost = true;
+            form.Activate();
+            form.BringToFront();
+            timer.Start();
+        };
+        Application.Run(form);
+        timer.Dispose();
     }
 
     private static void RunWindowUnavailableTest()

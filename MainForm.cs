@@ -23,6 +23,9 @@ internal sealed class TrackerView : UserControl
     private readonly Button _selectRegionButton = new();
     private readonly Button _startStopButton = new();
     private readonly Button _clearButton = new();
+    private readonly Button _overlaySettingsButton = new();
+    private readonly CheckBox _showItemsOverlayCheck = new();
+    private readonly CheckBox _showQuestItemsOverlayCheck = new();
     private readonly Label _regionLabel = new();
     private readonly Label _statusLabel = new();
     private readonly Label _adenaValueLabel = new();
@@ -35,7 +38,6 @@ internal sealed class TrackerView : UserControl
     private readonly ListView _questSummaryList = new();
     private readonly ListView _eventsList = new();
     private readonly PictureBox _preview = new();
-    private readonly Dictionary<OverlayPlacement, Button> _overlayPlacementButtons = [];
 
     private OcrService? _ocrService;
     private GameOverlayController? _overlayController;
@@ -78,7 +80,6 @@ internal sealed class TrackerView : UserControl
             _settings,
             () => _targetWindowHandle,
             _saveWorkspace);
-        UpdateOverlayPlacementButtons();
         NormalizeProfileHistories();
         UpdateRegionLabel();
         UpdateStatistics();
@@ -95,9 +96,10 @@ internal sealed class TrackerView : UserControl
             Dock = DockStyle.Top,
             Height = 182,
             Padding = new Padding(12, 10, 12, 8),
-            ColumnCount = 5,
+            ColumnCount = 6,
             RowCount = 3
         };
+        topPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         topPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         topPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         topPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -121,6 +123,11 @@ internal sealed class TrackerView : UserControl
         _clearButton.Height = 32;
         _clearButton.Click += (_, _) => ClearData();
 
+        _overlaySettingsButton.Text = "Overlay Settings";
+        _overlaySettingsButton.AutoSize = true;
+        _overlaySettingsButton.Height = 32;
+        _overlaySettingsButton.Click += (_, _) => OpenOverlaySettings();
+
         _regionLabel.AutoEllipsis = true;
         _regionLabel.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _statusLabel.AutoEllipsis = true;
@@ -137,6 +144,7 @@ internal sealed class TrackerView : UserControl
         statisticsPanel.Controls.Add(CreateStatisticBlock("Adena", _adenaValueLabel));
         statisticsPanel.Controls.Add(CreateStatisticBlock("XP", _xpValueLabel));
         statisticsPanel.Controls.Add(CreateStatisticBlock("SP", _spValueLabel));
+        statisticsPanel.Controls.Add(CreateOverlayVisibilityPanel());
 
         _preview.Dock = DockStyle.Fill;
         _preview.SizeMode = PictureBoxSizeMode.Zoom;
@@ -146,11 +154,12 @@ internal sealed class TrackerView : UserControl
         topPanel.Controls.Add(_selectRegionButton, 0, 0);
         topPanel.Controls.Add(_startStopButton, 1, 0);
         topPanel.Controls.Add(_clearButton, 2, 0);
-        topPanel.Controls.Add(_regionLabel, 3, 0);
+        topPanel.Controls.Add(_overlaySettingsButton, 3, 0);
+        topPanel.Controls.Add(_regionLabel, 4, 0);
         topPanel.Controls.Add(statisticsPanel, 0, 1);
-        topPanel.SetColumnSpan(statisticsPanel, 4);
+        topPanel.SetColumnSpan(statisticsPanel, 5);
         topPanel.Controls.Add(_statusLabel, 0, 2);
-        topPanel.SetColumnSpan(_statusLabel, 4);
+        topPanel.SetColumnSpan(_statusLabel, 5);
         var historyPanel = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
@@ -172,10 +181,9 @@ internal sealed class TrackerView : UserControl
         _historyCombo.SelectedIndexChanged += HistoryComboOnSelectedIndexChanged;
         historyPanel.Controls.Add(_historyCombo, 0, 1);
 
-        topPanel.Controls.Add(historyPanel, 4, 0);
-        var overlaySelector = CreateOverlayPlacementSelector();
-        topPanel.Controls.Add(overlaySelector, 4, 1);
-        topPanel.SetRowSpan(overlaySelector, 2);
+        topPanel.Controls.Add(historyPanel, 5, 0);
+        topPanel.Controls.Add(_preview, 5, 1);
+        topPanel.SetRowSpan(_preview, 2);
 
         ConfigureSummaryList(_dropSummaryList, _itemImages);
         ConfigureSummaryList(_questSummaryList, _itemImages);
@@ -255,79 +263,36 @@ internal sealed class TrackerView : UserControl
         Controls.Add(topPanel);
     }
 
-    private Control CreateOverlayPlacementSelector()
+    private Control CreateOverlayVisibilityPanel()
     {
-        var panel = new TableLayoutPanel
+        var panel = new FlowLayoutPanel
         {
-            Dock = DockStyle.Fill,
-            ColumnCount = 3,
-            RowCount = 3,
-            Margin = new Padding(0),
-            Padding = new Padding(0)
+            Width = 210,
+            Height = 65,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            Margin = new Padding(4, 0, 0, 0)
         };
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 28));
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 28));
-        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
-        panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
-
-        Button AddPlacementButton(string text, OverlayPlacement placement, int column, int row)
-        {
-            var button = new Button
-            {
-                Text = text,
-                Dock = DockStyle.Fill,
-                FlatStyle = FlatStyle.Flat,
-                Margin = new Padding(2),
-                Tag = placement,
-                TabStop = false
-            };
-            button.FlatAppearance.BorderSize = 1;
-            button.Click += OverlayPlacementButtonOnClick;
-            _overlayPlacementButtons[placement] = button;
-            panel.Controls.Add(button, column, row);
-            return button;
-        }
-
-        AddPlacementButton("▲", OverlayPlacement.Top, 1, 0);
-        AddPlacementButton("◀", OverlayPlacement.Left, 0, 1);
-        AddPlacementButton("▶", OverlayPlacement.Right, 2, 1);
-        AddPlacementButton("▼", OverlayPlacement.Bottom, 1, 2);
-        panel.Controls.Add(_preview, 1, 1);
+        _showItemsOverlayCheck.Text = "Enable items overlay";
+        _showItemsOverlayCheck.AutoSize = true;
+        _showItemsOverlayCheck.Checked = _settings.ShowItemsOverlay;
+        _showItemsOverlayCheck.CheckedChanged += OverlayVisibilityChanged;
+        _showQuestItemsOverlayCheck.Text = "Enable quest-items overlay";
+        _showQuestItemsOverlayCheck.AutoSize = true;
+        _showQuestItemsOverlayCheck.Checked = _settings.ShowQuestItemsOverlay;
+        _showQuestItemsOverlayCheck.CheckedChanged += OverlayVisibilityChanged;
+        panel.Controls.Add(_showItemsOverlayCheck);
+        panel.Controls.Add(_showQuestItemsOverlayCheck);
         return panel;
     }
 
-    private void OverlayPlacementButtonOnClick(object? sender, EventArgs e)
+    private void OverlayVisibilityChanged(object? sender, EventArgs e)
     {
-        if (sender is not Button { Tag: OverlayPlacement requested })
-        {
-            return;
-        }
-
-        var placement = _settings.OverlayPlacement == requested
-            ? OverlayPlacement.Off
-            : requested;
-        _overlayController?.SetPlacement(placement);
-        UpdateOverlayPlacementButtons();
+        _settings.ShowItemsOverlay = _showItemsOverlayCheck.Checked;
+        _settings.ShowQuestItemsOverlay = _showQuestItemsOverlayCheck.Checked;
+        _overlayController?.RefreshConfiguration();
         UpdateRegionLabel();
         _saveWorkspace();
-    }
-
-    private void UpdateOverlayPlacementButtons()
-    {
-        foreach (var (placement, button) in _overlayPlacementButtons)
-        {
-            var selected = _settings.OverlayPlacement == placement;
-            button.BackColor = selected ? Color.FromArgb(0, 120, 215) : SystemColors.Control;
-            button.ForeColor = selected ? Color.White : SystemColors.ControlText;
-            button.FlatAppearance.BorderColor = selected ? Color.FromArgb(0, 84, 153) : SystemColors.ControlDark;
-        }
-
-        var overlayText = _settings.OverlayPlacement == OverlayPlacement.Off
-            ? "Off"
-            : _settings.OverlayPlacement.ToString();
-        _preview.AccessibleDescription = $"Overlay: {overlayText}. Click the selected direction again to turn it off.";
     }
 
     private static Control CreateStatisticBlock(string title, Label valueLabel)
@@ -467,6 +432,104 @@ internal sealed class TrackerView : UserControl
         catch
         {
             // Missing icons do not affect OCR or statistics.
+        }
+    }
+
+    private void OpenOverlaySettings()
+    {
+        using var dialog = new OverlaySettingsForm(_settings, SelectOverlayRegionAsync);
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        _settings.OverlayPlacement = dialog.SelectedStatsPlacement;
+        if (dialog.ItemsRegionSet)
+        {
+            _settings.SetItemsOverlayRegion(dialog.ItemsRegion);
+        }
+        if (dialog.QuestItemsRegionSet)
+        {
+            _settings.SetQuestItemsOverlayRegion(dialog.QuestItemsRegion);
+        }
+
+        _overlayController?.RefreshConfiguration();
+        UpdateRegionLabel();
+        _saveWorkspace();
+    }
+
+    private async Task<Rectangle?> SelectOverlayRegionAsync(
+        Rectangle initialRelativeRegion,
+        string overlayName)
+    {
+        if (!_settings.HasCaptureRegion)
+        {
+            MessageBox.Show(
+                this,
+                "Select the game window and system chat area first.",
+                "Overlay Area",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return null;
+        }
+
+        var targetWindow = ScreenCaptureService.ResolveWindow(_settings, _targetWindowHandle);
+        if (targetWindow is null)
+        {
+            MessageBox.Show(
+                this,
+                $"The selected game window ({_settings.TargetProcessName}) is not running.",
+                "Overlay Area",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return null;
+        }
+
+        _targetWindowHandle = targetWindow.Handle;
+        var ownerForm = FindForm();
+        _overlayController?.SetTemporarilyHidden(true);
+        ownerForm?.Hide();
+        try
+        {
+            ScreenCaptureService.RestoreAndActivate(targetWindow.Handle);
+            await Task.Delay(350);
+            if (!ScreenCaptureService.TryGetWindowBounds(targetWindow.Handle, out var windowBounds))
+            {
+                MessageBox.Show(
+                    "The selected window is no longer available.",
+                    "Overlay Area",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                return null;
+            }
+
+            var initialScreenRegion = initialRelativeRegion.Width >= 80
+                && initialRelativeRegion.Height >= 30
+                ? ScreenCaptureService.GetScreenRegion(
+                    targetWindow.Handle,
+                    initialRelativeRegion,
+                    new Size(_settings.ReferenceWindowWidth, _settings.ReferenceWindowHeight))
+                : Rectangle.Empty;
+            using var selector = new RegionSelectorForm(
+                windowBounds,
+                initialScreenRegion,
+                $"Drag to select the {overlayName} position and size. Press Esc to cancel.");
+            if (selector.ShowDialog() != DialogResult.OK)
+            {
+                return null;
+            }
+
+            return new Rectangle(
+                selector.SelectedRegion.X - windowBounds.X,
+                selector.SelectedRegion.Y - windowBounds.Y,
+                selector.SelectedRegion.Width,
+                selector.SelectedRegion.Height);
+        }
+        finally
+        {
+            ownerForm?.Show();
+            ownerForm?.Activate();
+            _overlayController?.SetTemporarilyHidden(false);
         }
     }
 
@@ -1060,12 +1123,12 @@ internal sealed class TrackerView : UserControl
 
     private void UpdateRegionLabel()
     {
-        var overlay = _settings.OverlayPlacement == OverlayPlacement.Off
+        var statsOverlay = _settings.OverlayPlacement == OverlayPlacement.Off
             ? "off"
             : _settings.OverlayPlacement.ToString().ToLowerInvariant();
         _regionLabel.Text = _settings.HasCaptureRegion
-            ? $"Window: {_settings.TargetProcessName} · area: {_settings.CaptureWidth}×{_settings.CaptureHeight} · overlay: {overlay}"
-            : $"Window and area not selected · overlay: {overlay}";
+            ? $"Window: {_settings.TargetProcessName} · area: {_settings.CaptureWidth}×{_settings.CaptureHeight} · stats overlay: {statsOverlay}"
+            : $"Window and area not selected · stats overlay: {statsOverlay}";
     }
 
     private void UpdateControls()
@@ -1075,6 +1138,9 @@ internal sealed class TrackerView : UserControl
         _startStopButton.Enabled = current && (_monitoring || _settings.HasCaptureRegion);
         _selectRegionButton.Enabled = current && !_monitoring;
         _clearButton.Enabled = current;
+        _overlaySettingsButton.Enabled = current;
+        _showItemsOverlayCheck.Enabled = current;
+        _showQuestItemsOverlayCheck.Enabled = current;
     }
 
     private void SetStatus(string text, bool active)

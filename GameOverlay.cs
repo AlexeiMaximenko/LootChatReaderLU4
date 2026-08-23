@@ -1,4 +1,3 @@
-using System.ComponentModel;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Drawing.Text;
@@ -20,7 +19,6 @@ internal sealed class GameOverlayController : IDisposable
     private const int Gap = 6;
     private const uint GwHwndPrev = 3;
     private const uint GaRootOwner = 3;
-    private const int VkLeftButton = 0x01;
     private const uint SwpNoSize = 0x0001;
     private const uint SwpNoMove = 0x0002;
     private const uint SwpNoActivate = 0x0010;
@@ -31,17 +29,11 @@ internal sealed class GameOverlayController : IDisposable
 
     private readonly AppSettings _settings;
     private readonly Func<nint> _targetWindowProvider;
-    private readonly Action _saveSettings;
-    private readonly IDisposable _globalMouseRegistration;
     private readonly System.Windows.Forms.Timer _timer;
     private readonly StatsOverlayForm _stats = new();
-    private readonly OverlayMenuForm _menu = new();
-    private readonly LootOverlayForm _details = new();
-    private OverlaySnapshot _snapshot = new(0, 0, 0, [], []);
-    private bool _menuVisible;
-    private bool _detailsVisible;
-    private bool _showQuestItems;
-    private bool _polledLeftButtonDown;
+    private readonly LootOverlayForm _items = new();
+    private readonly LootOverlayForm _questItems = new();
+    private bool _temporarilyHidden;
     private bool _disposed;
 
     public GameOverlayController(
@@ -51,27 +43,10 @@ internal sealed class GameOverlayController : IDisposable
     {
         _settings = settings;
         _targetWindowProvider = targetWindowProvider;
-        _saveSettings = saveSettings;
-        GlobalShiftKeyState.AddReference();
-        _globalMouseRegistration = GlobalOverlayMouseRouter.Register(HandleGlobalMouse);
-        _settings.OverlayDetailsWidth = Math.Clamp(_settings.OverlayDetailsWidth, 220, 1200);
-        _settings.OverlayDetailsHeight = Math.Clamp(_settings.OverlayDetailsHeight, 120, 1200);
+        _items.SetItems("Items", []);
+        _questItems.SetItems("Quest Items", []);
 
-        _stats.MoreClicked += ToggleMenu;
-        _menu.CategorySelected += ShowCategory;
-        _details.CloseClicked += CloseDetails;
-        _details.BoundsChangeCompleted += bounds =>
-        {
-            _settings.OverlayDetailsX = bounds.X;
-            _settings.OverlayDetailsY = bounds.Y;
-            _settings.OverlayDetailsWidth = Math.Clamp(bounds.Width, 220, 1200);
-            _settings.OverlayDetailsHeight = Math.Clamp(bounds.Height, 120, 1200);
-            _settings.OverlayDetailsPositionSet = true;
-            _saveSettings();
-        };
-        _details.Size = new Size(_settings.OverlayDetailsWidth, _settings.OverlayDetailsHeight);
-
-        _timer = new System.Windows.Forms.Timer { Interval = 25 };
+        _timer = new System.Windows.Forms.Timer { Interval = 40 };
         _timer.Tick += (_, _) => UpdateOverlayWindows();
         _timer.Start();
     }
@@ -79,10 +54,19 @@ internal sealed class GameOverlayController : IDisposable
     public void SetPlacement(OverlayPlacement placement)
     {
         _settings.OverlayPlacement = placement;
-        if (placement == OverlayPlacement.Off)
+        UpdateOverlayWindows();
+    }
+
+    public void RefreshConfiguration()
+    {
+        UpdateOverlayWindows();
+    }
+
+    public void SetTemporarilyHidden(bool hidden)
+    {
+        _temporarilyHidden = hidden;
+        if (hidden)
         {
-            _menuVisible = false;
-            _detailsVisible = false;
             HideAll();
         }
         else
@@ -93,245 +77,197 @@ internal sealed class GameOverlayController : IDisposable
 
     public void UpdateSnapshot(OverlaySnapshot snapshot)
     {
-        _snapshot = snapshot;
         _stats.SetStatistics(snapshot.Adena, snapshot.Xp, snapshot.Sp);
-        UpdateDetailContent();
+        _items.SetItems("Items", snapshot.Items);
+        _questItems.SetItems("Quest Items", snapshot.QuestItems);
     }
 
     internal void ShowDetailsForDiagnostic(bool questItems)
     {
-        ShowCategory(questItems);
+        if (questItems)
+        {
+            _settings.ShowQuestItemsOverlay = true;
+        }
+        else
+        {
+            _settings.ShowItemsOverlay = true;
+        }
+        UpdateOverlayWindows();
     }
 
     internal string GetDiagnosticState() =>
-        $"stats={_stats.Bounds} client={_stats.ClientSize} visible={_stats.Visible}; " +
-        $"details={_details.Bounds} client={_details.ClientSize} visible={_details.Visible}";
+        $"stats={_stats.Bounds} visible={_stats.Visible}; " +
+        $"items={_items.Bounds} visible={_items.Visible}; " +
+        $"quest={_questItems.Bounds} visible={_questItems.Visible}";
 
-    internal (nint Owner, bool Topmost) GetZOrderDiagnostic() =>
-        (_stats.NativeOwner, _stats.IsNativeTopmost);
+    internal (nint Owner, bool Topmost) GetZOrderDiagnostic()
+    {
+        var window = new LayeredOverlayForm[] { _stats, _items, _questItems }
+            .First(candidate => candidate.Visible || candidate == _stats);
+        return (window.NativeOwner, window.IsNativeTopmost);
+    }
 
     internal void ApplyZOrderForDiagnostic(nint targetWindow, bool targetIsForeground) =>
         PlaceDirectlyAboveTarget(targetWindow, targetIsForeground);
 
-    private void ToggleMenu()
-    {
-        _menuVisible = !_menuVisible;
-        if (!_menuVisible)
-        {
-            _menu.Hide();
-        }
-        UpdateOverlayWindows();
-    }
-
-    private void ShowCategory(bool questItems)
-    {
-        _showQuestItems = questItems;
-        _menuVisible = false;
-        _detailsVisible = true;
-        _menu.Hide();
-        UpdateDetailContent();
-        UpdateOverlayWindows();
-    }
-
-    private void CloseDetails()
-    {
-        _detailsVisible = false;
-        _details.Hide();
-    }
-
-    private bool HandleGlobalMouse(GlobalMouseActivity activity)
-    {
-        if (_disposed)
-        {
-            return false;
-        }
-
-        if (activity.Action == GlobalMouseAction.LeftDown)
-        {
-            _polledLeftButtonDown = true;
-        }
-        else if (activity.Action == GlobalMouseAction.LeftUp)
-        {
-            _polledLeftButtonDown = false;
-        }
-
-        var targetWindow = _targetWindowProvider();
-        if (targetWindow == nint.Zero || !IsTargetForeground(targetWindow))
-        {
-            return false;
-        }
-
-        return RoutePhysicalMouse(activity, GlobalShiftKeyState.IsPressed);
-    }
-
-    private bool RoutePhysicalMouse(GlobalMouseActivity activity, bool shiftPressed) =>
-        _details.TryHandleGlobalMouse(activity, shiftPressed)
-        || _menu.TryHandleGlobalMouse(activity, shiftPressed)
-        || _stats.TryHandleGlobalMouse(activity, shiftPressed);
-
-    private void UpdateDetailContent()
-    {
-        _details.SetItems(
-            _showQuestItems ? "Quest Items" : "Items",
-            _showQuestItems ? _snapshot.QuestItems : _snapshot.Items);
-    }
-
     private void UpdateOverlayWindows()
     {
-        var placement = _settings.OverlayPlacement;
+        var showStats = _settings.OverlayPlacement != OverlayPlacement.Off;
+        var showItems = _settings.ShowItemsOverlay;
+        var showQuestItems = _settings.ShowQuestItemsOverlay;
         var targetWindow = _targetWindowProvider();
-        if (placement == OverlayPlacement.Off
+        if (_temporarilyHidden
+            || (!showStats && !showItems && !showQuestItems)
             || targetWindow == nint.Zero
             || !IsWindow(targetWindow)
             || IsIconic(targetWindow)
             || !_settings.HasCaptureRegion
             || !ScreenCaptureService.TryGetWindowBounds(targetWindow, out var windowBounds))
         {
-            SynchronizePolledPointerState();
             HideAll();
             return;
         }
 
+        var referenceSize = new Size(
+            _settings.ReferenceWindowWidth,
+            _settings.ReferenceWindowHeight);
         var captureRegion = ScreenCaptureService.GetScreenRegion(
             targetWindow,
             _settings.CaptureRegion,
-            new Size(_settings.ReferenceWindowWidth, _settings.ReferenceWindowHeight));
+            referenceSize);
         if (captureRegion.IsEmpty)
         {
-            SynchronizePolledPointerState();
             HideAll();
             return;
         }
 
-        var shiftPressed = GlobalShiftKeyState.IsPressed;
-        _stats.InteractionEnabled = shiftPressed;
-        _menu.InteractionEnabled = shiftPressed;
-        _details.InteractionEnabled = shiftPressed;
-        foreach (var window in new LayeredOverlayForm[] { _stats, _menu, _details })
+        foreach (var window in OverlayWindows)
         {
             window.SetNativeOwner(targetWindow);
         }
 
-        _stats.SetPlacement(placement);
-        var statsSize = StatsOverlayForm.GetOverlaySize(placement, captureRegion.Size);
-        var statsBounds = ClampToBounds(
-            PositionBeside(captureRegion, statsSize, placement),
-            windowBounds);
-        _stats.SetLayeredBounds(statsBounds);
-        _stats.ShowInactive();
-
-        Rectangle? menuBounds = null;
-        if (_menuVisible)
+        Rectangle? statsBounds = null;
+        if (showStats)
         {
-            menuBounds = PositionAuxiliary(
-                statsBounds,
-                OverlayMenuForm.OverlaySize,
-                placement,
+            var placement = _settings.OverlayPlacement;
+            _stats.SetPlacement(placement);
+            var size = StatsOverlayForm.GetOverlaySize(placement, captureRegion.Size);
+            statsBounds = ClampToBounds(PositionBeside(captureRegion, size, placement), windowBounds);
+            _stats.SetLayeredBounds(statsBounds.Value);
+            _stats.ShowInactive();
+        }
+        else
+        {
+            _stats.Hide();
+        }
+
+        Rectangle? itemsBounds = null;
+        if (showItems)
+        {
+            var fallbackAnchor = statsBounds ?? captureRegion;
+            var fallback = PositionAuxiliary(
+                fallbackAnchor,
+                DefaultLootSize(windowBounds),
+                OverlayPlacement.Right,
                 windowBounds);
-            _menu.SetLayeredBounds(menuBounds.Value);
-            _menu.ShowInactive();
+            itemsBounds = ResolveConfiguredBounds(
+                targetWindow,
+                _settings.ItemsOverlayRegion,
+                _settings.ItemsOverlayRegionSet,
+                referenceSize,
+                fallback,
+                windowBounds);
+            _items.SetLayeredBounds(itemsBounds.Value);
+            _items.ShowInactive();
         }
         else
         {
-            _menu.Hide();
+            _items.Hide();
         }
 
-        if (_detailsVisible)
+        if (showQuestItems)
         {
-            if (!_details.IsInSizeMove)
-            {
-                var detailSize = new Size(
-                    Math.Clamp(_settings.OverlayDetailsWidth, 220, 1200),
-                    Math.Clamp(_settings.OverlayDetailsHeight, 120, 1200));
-                if (_settings.OverlayDetailsPositionSet)
-                {
-                    _details.SetLayeredBounds(new Rectangle(
-                        _settings.OverlayDetailsX,
-                        _settings.OverlayDetailsY,
-                        detailSize.Width,
-                        detailSize.Height));
-                }
-                else
-                {
-                    var anchor = menuBounds ?? statsBounds;
-                    _details.SetLayeredBounds(PositionAuxiliary(
-                        anchor,
-                        detailSize,
-                        placement,
-                        windowBounds));
-                }
-            }
-            _details.ShowInactive();
+            var fallbackAnchor = itemsBounds ?? statsBounds ?? captureRegion;
+            var fallback = PositionAuxiliary(
+                fallbackAnchor,
+                DefaultLootSize(windowBounds),
+                OverlayPlacement.Bottom,
+                windowBounds);
+            var bounds = ResolveConfiguredBounds(
+                targetWindow,
+                _settings.QuestItemsOverlayRegion,
+                _settings.QuestItemsOverlayRegionSet,
+                referenceSize,
+                fallback,
+                windowBounds);
+            _questItems.SetLayeredBounds(bounds);
+            _questItems.ShowInactive();
         }
         else
         {
-            _details.Hide();
+            _questItems.Hide();
         }
 
         PlaceDirectlyAboveTarget(targetWindow);
-        PollPhysicalPointer(targetWindow, shiftPressed);
     }
 
-    private void PollPhysicalPointer(nint targetWindow, bool shiftPressed)
+    private IEnumerable<LayeredOverlayForm> OverlayWindows
     {
-        var leftButtonDown = (GetAsyncKeyState(VkLeftButton) & 0x8000) != 0;
-        if (!IsTargetForeground(targetWindow) || !GetCursorPos(out var cursor))
+        get
         {
-            _polledLeftButtonDown = leftButtonDown;
-            return;
-        }
-
-        var location = new Point(cursor.X, cursor.Y);
-        if (leftButtonDown != _polledLeftButtonDown)
-        {
-            _polledLeftButtonDown = leftButtonDown;
-            RoutePhysicalMouse(
-                new GlobalMouseActivity(
-                    leftButtonDown ? GlobalMouseAction.LeftDown : GlobalMouseAction.LeftUp,
-                    location),
-                shiftPressed);
-        }
-        else if (leftButtonDown)
-        {
-            RoutePhysicalMouse(
-                new GlobalMouseActivity(GlobalMouseAction.Move, location),
-                shiftPressed);
+            yield return _stats;
+            yield return _items;
+            yield return _questItems;
         }
     }
 
-    private void SynchronizePolledPointerState()
+    private static Rectangle ResolveConfiguredBounds(
+        nint targetWindow,
+        Rectangle relativeRegion,
+        bool regionSet,
+        Size referenceSize,
+        Rectangle fallback,
+        Rectangle windowBounds)
     {
-        _polledLeftButtonDown = (GetAsyncKeyState(VkLeftButton) & 0x8000) != 0;
+        if (!regionSet || relativeRegion.Width < 80 || relativeRegion.Height < 30)
+        {
+            return ClampToBounds(fallback, windowBounds);
+        }
+
+        var screenRegion = ScreenCaptureService.GetScreenRegion(
+            targetWindow,
+            relativeRegion,
+            referenceSize);
+        return ClampToBounds(screenRegion, windowBounds);
     }
+
+    private static Size DefaultLootSize(Rectangle windowBounds) => new(
+        Math.Clamp(320, 80, Math.Max(80, windowBounds.Width)),
+        Math.Clamp(250, 30, Math.Max(30, windowBounds.Height)));
 
     private void PlaceDirectlyAboveTarget(nint targetWindow, bool? foregroundOverride = null)
     {
         var targetIsForeground = foregroundOverride ?? IsTargetForeground(targetWindow);
         if (targetIsForeground)
         {
-            foreach (var window in new LayeredOverlayForm[] { _stats, _menu, _details })
+            foreach (var window in OverlayWindows.Where(window => window.Visible && window.IsHandleCreated))
             {
-                if (window.Visible && window.IsHandleCreated)
-                {
-                    SetWindowPos(
-                        window.Handle,
-                        HwndTopmost,
-                        0,
-                        0,
-                        0,
-                        0,
-                        SwpNoSize | SwpNoMove | SwpNoActivate | SwpNoOwnerZOrder);
-                }
+                SetWindowPos(
+                    window.Handle,
+                    HwndTopmost,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SwpNoSize | SwpNoMove | SwpNoActivate | SwpNoOwnerZOrder);
             }
             return;
         }
 
-        var overlayHandles = new HashSet<nint>
-        {
-            _stats.IsHandleCreated ? _stats.Handle : nint.Zero,
-            _menu.IsHandleCreated ? _menu.Handle : nint.Zero,
-            _details.IsHandleCreated ? _details.Handle : nint.Zero
-        };
+        var overlayHandles = OverlayWindows
+            .Where(window => window.IsHandleCreated)
+            .Select(window => window.Handle)
+            .ToHashSet();
         var insertAfter = GetWindow(targetWindow, GwHwndPrev);
         while (insertAfter != nint.Zero && overlayHandles.Contains(insertAfter))
         {
@@ -339,13 +275,8 @@ internal sealed class GameOverlayController : IDisposable
         }
 
         var zOrderAnchor = insertAfter == nint.Zero ? HwndTop : insertAfter;
-        foreach (var window in new LayeredOverlayForm[] { _stats, _menu, _details })
+        foreach (var window in OverlayWindows.Where(window => window.Visible && window.IsHandleCreated))
         {
-            if (!window.Visible || !window.IsHandleCreated)
-            {
-                continue;
-            }
-
             SetWindowPos(
                 window.Handle,
                 HwndNotTopmost,
@@ -368,9 +299,7 @@ internal sealed class GameOverlayController : IDisposable
     private static Rectangle PositionBeside(
         Rectangle captureRegion,
         Size overlaySize,
-        OverlayPlacement placement)
-    {
-        return placement switch
+        OverlayPlacement placement) => placement switch
         {
             OverlayPlacement.Left => new Rectangle(
                 captureRegion.Left - overlaySize.Width - Gap,
@@ -394,38 +323,6 @@ internal sealed class GameOverlayController : IDisposable
                 overlaySize.Height),
             _ => Rectangle.Empty
         };
-    }
-
-    private static Rectangle PositionOutward(
-        Rectangle anchor,
-        Size overlaySize,
-        OverlayPlacement placement)
-    {
-        return placement switch
-        {
-            OverlayPlacement.Left => new Rectangle(
-                anchor.Left - overlaySize.Width - Gap,
-                anchor.Top,
-                overlaySize.Width,
-                overlaySize.Height),
-            OverlayPlacement.Top => new Rectangle(
-                anchor.Left,
-                anchor.Top - overlaySize.Height - Gap,
-                overlaySize.Width,
-                overlaySize.Height),
-            OverlayPlacement.Right => new Rectangle(
-                anchor.Right + Gap,
-                anchor.Top,
-                overlaySize.Width,
-                overlaySize.Height),
-            OverlayPlacement.Bottom => new Rectangle(
-                anchor.Left,
-                anchor.Bottom + Gap,
-                overlaySize.Width,
-                overlaySize.Height),
-            _ => anchor
-        };
-    }
 
     private static Rectangle PositionAuxiliary(
         Rectangle anchor,
@@ -433,47 +330,28 @@ internal sealed class GameOverlayController : IDisposable
         OverlayPlacement placement,
         Rectangle bounds)
     {
-        var desired = PositionOutward(anchor, overlaySize, placement);
+        var desired = PositionBeside(anchor, overlaySize, placement);
         if (bounds.Contains(desired))
         {
             return desired;
         }
 
-        // If there is no room farther in the selected direction, keep the
-        // auxiliary panel clear of the stats panel instead of clamping the two
-        // on top of each other.
-        var below = new Rectangle(
-            anchor.Left,
-            anchor.Bottom + Gap,
-            overlaySize.Width,
-            overlaySize.Height);
-        var above = new Rectangle(
-            anchor.Left,
-            anchor.Top - overlaySize.Height - Gap,
-            overlaySize.Width,
-            overlaySize.Height);
-        var right = new Rectangle(
-            anchor.Right + Gap,
-            anchor.Top,
-            overlaySize.Width,
-            overlaySize.Height);
-        var left = new Rectangle(
-            anchor.Left - overlaySize.Width - Gap,
-            anchor.Top,
-            overlaySize.Width,
-            overlaySize.Height);
-
-        var fallbacks = placement is OverlayPlacement.Left or OverlayPlacement.Right
-            ? new[] { below, above, right, left }
-            : new[] { right, left, below, above };
-        var fitting = fallbacks.FirstOrDefault(bounds.Contains);
-        return fitting.IsEmpty ? ClampToBounds(desired, bounds) : fitting;
+        var candidates = new[]
+        {
+            PositionBeside(anchor, overlaySize, OverlayPlacement.Right),
+            PositionBeside(anchor, overlaySize, OverlayPlacement.Bottom),
+            PositionBeside(anchor, overlaySize, OverlayPlacement.Left),
+            PositionBeside(anchor, overlaySize, OverlayPlacement.Top)
+        };
+        return candidates.FirstOrDefault(bounds.Contains) is { IsEmpty: false } fitting
+            ? fitting
+            : ClampToBounds(desired, bounds);
     }
 
     private static Rectangle ClampToBounds(Rectangle rectangle, Rectangle bounds)
     {
-        var width = Math.Min(rectangle.Width, bounds.Width);
-        var height = Math.Min(rectangle.Height, bounds.Height);
+        var width = Math.Min(Math.Max(1, rectangle.Width), bounds.Width);
+        var height = Math.Min(Math.Max(1, rectangle.Height), bounds.Height);
         return new Rectangle(
             Math.Clamp(rectangle.X, bounds.Left, Math.Max(bounds.Left, bounds.Right - width)),
             Math.Clamp(rectangle.Y, bounds.Top, Math.Max(bounds.Top, bounds.Bottom - height)),
@@ -483,9 +361,10 @@ internal sealed class GameOverlayController : IDisposable
 
     private void HideAll()
     {
-        _stats.Hide();
-        _menu.Hide();
-        _details.Hide();
+        foreach (var window in OverlayWindows)
+        {
+            window.Hide();
+        }
     }
 
     internal static bool IsTargetForeground(nint targetWindow)
@@ -526,11 +405,9 @@ internal sealed class GameOverlayController : IDisposable
         _disposed = true;
         _timer.Stop();
         _timer.Dispose();
-        _globalMouseRegistration.Dispose();
         _stats.Dispose();
-        _menu.Dispose();
-        _details.Dispose();
-        GlobalShiftKeyState.Release();
+        _items.Dispose();
+        _questItems.Dispose();
     }
 
     [DllImport("user32.dll")]
@@ -553,13 +430,6 @@ internal sealed class GameOverlayController : IDisposable
     [DllImport("user32.dll")]
     private static extern uint GetWindowThreadProcessId(nint window, out uint processId);
 
-    [DllImport("user32.dll")]
-    private static extern short GetAsyncKeyState(int virtualKey);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetCursorPos(out ControllerNativePoint point);
-
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetWindowPos(
@@ -570,14 +440,6 @@ internal sealed class GameOverlayController : IDisposable
         int width,
         int height,
         uint flags);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct ControllerNativePoint
-    {
-        public int X;
-        public int Y;
-    }
-
 }
 
 internal abstract class LayeredOverlayForm : Form
@@ -588,35 +450,11 @@ internal abstract class LayeredOverlayForm : Form
     private const int WsExTransparent = 0x00000020;
     private const int GwlExStyle = -20;
     private const int GwlpHwndParent = -8;
-    private const uint SwpNoSize = 0x0001;
-    private const uint SwpNoMove = 0x0002;
-    private const uint SwpNoZOrder = 0x0004;
-    private const uint SwpNoActivate = 0x0010;
-    private const uint SwpFrameChanged = 0x0020;
-    private const int WmNcHitTest = 0x0084;
-    private const int WmNcLButtonDown = 0x00A1;
-    private const int WmNcLButtonUp = 0x00A2;
-    private const int WmMouseMove = 0x0200;
-    private const int WmLButtonUp = 0x0202;
-    private const int WmMouseWheel = 0x020A;
-    private const int WmEnterSizeMove = 0x0231;
-    private const int WmExitSizeMove = 0x0232;
-    private const int HtTransparent = -1;
-    private const int HtClient = 1;
-    private const int HtCaption = 2;
-    private const int HtRight = 11;
-    private const int HtBottom = 15;
-    private const int HtBottomRight = 17;
     private const byte AcSrcOver = 0x00;
     private const byte AcSrcAlpha = 0x01;
     private const int UlwAlpha = 0x00000002;
 
-    private bool _interactionEnabled;
-    private OverlayHitTest _manualOperation = OverlayHitTest.Transparent;
-    private NativePoint _operationStartCursor;
-    private Rectangle _operationStartBounds;
     private nint _nativeOwner;
-    private bool _globalClientPressed;
 
     protected LayeredOverlayForm(Size initialSize)
     {
@@ -627,26 +465,6 @@ internal abstract class LayeredOverlayForm : Form
         Size = initialSize;
         SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint, true);
     }
-
-    [Browsable(false)]
-    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
-    public bool InteractionEnabled
-    {
-        get => _interactionEnabled;
-        set
-        {
-            if (_interactionEnabled == value)
-            {
-                return;
-            }
-
-            _interactionEnabled = value;
-            UpdateClickThroughStyle();
-            RenderLayer();
-        }
-    }
-
-    public bool IsInSizeMove { get; private set; }
 
     internal nint NativeOwner => GetWindowLongPtr(Handle, GwlpHwndParent);
 
@@ -660,19 +478,9 @@ internal abstract class LayeredOverlayForm : Form
         get
         {
             var parameters = base.CreateParams;
-            parameters.ExStyle |= WsExLayered | WsExToolWindow | WsExNoActivate;
-            if (!InteractionEnabled)
-            {
-                parameters.ExStyle |= WsExTransparent;
-            }
+            parameters.ExStyle |= WsExLayered | WsExToolWindow | WsExNoActivate | WsExTransparent;
             return parameters;
         }
-    }
-
-    protected override void OnHandleCreated(EventArgs e)
-    {
-        base.OnHandleCreated(e);
-        UpdateClickThroughStyle();
     }
 
     public void ShowInactive()
@@ -704,97 +512,12 @@ internal abstract class LayeredOverlayForm : Form
         }
     }
 
-    internal bool TryHandleGlobalMouse(GlobalMouseActivity activity, bool shiftPressed)
-    {
-        if (!Visible || IsDisposed)
-        {
-            return false;
-        }
-
-        if (activity.Action == GlobalMouseAction.Move)
-        {
-            if (_manualOperation is OverlayHitTest.Transparent)
-            {
-                return false;
-            }
-            if (shiftPressed)
-            {
-                ApplyManualOperation(new NativePoint(
-                    activity.ScreenLocation.X,
-                    activity.ScreenLocation.Y));
-            }
-            else
-            {
-                FinishManualOperation();
-            }
-            return true;
-        }
-
-        if (activity.Action == GlobalMouseAction.LeftUp)
-        {
-            if (_manualOperation is not OverlayHitTest.Transparent)
-            {
-                FinishManualOperation();
-                return true;
-            }
-            if (_globalClientPressed)
-            {
-                _globalClientPressed = false;
-                if (Bounds.Contains(activity.ScreenLocation))
-                {
-                    HandleClick(new Point(
-                        activity.ScreenLocation.X - Left,
-                        activity.ScreenLocation.Y - Top));
-                }
-                return true;
-            }
-            return false;
-        }
-
-        if (!shiftPressed || !Bounds.Contains(activity.ScreenLocation))
-        {
-            return false;
-        }
-
-        var clientPoint = new Point(
-            activity.ScreenLocation.X - Left,
-            activity.ScreenLocation.Y - Top);
-        var hit = HitTestInteractive(clientPoint);
-        if (hit == OverlayHitTest.Transparent)
-        {
-            return false;
-        }
-
-        if (activity.Action == GlobalMouseAction.Wheel)
-        {
-            HandleMouseWheel(activity.WheelDelta);
-            return true;
-        }
-
-        if (activity.Action != GlobalMouseAction.LeftDown)
-        {
-            return false;
-        }
-
-        if (hit == OverlayHitTest.Client)
-        {
-            _globalClientPressed = true;
-            return true;
-        }
-
-        StartManualOperation(
-            hit,
-            new NativePoint(activity.ScreenLocation.X, activity.ScreenLocation.Y));
-        return true;
-    }
-
     protected void RenderLayer()
     {
         if (!IsHandleCreated || ClientSize.Width <= 0 || ClientSize.Height <= 0 || IsDisposed)
         {
             return;
         }
-
         if (!GetWindowRect(Handle, out var nativeBounds))
         {
             return;
@@ -851,22 +574,6 @@ internal abstract class LayeredOverlayForm : Form
 
     protected abstract void DrawLayer(Graphics graphics, Size size);
 
-    protected virtual OverlayHitTest HitTestInteractive(Point point) => OverlayHitTest.Transparent;
-
-    protected virtual void HandleClick(Point point)
-    {
-    }
-
-    protected virtual void HandleMouseWheel(int delta)
-    {
-    }
-
-    protected static void FillInvisibleHitArea(Graphics graphics, Rectangle rectangle)
-    {
-        using var brush = new SolidBrush(Color.FromArgb(1, 0, 0, 0));
-        graphics.FillRectangle(brush, rectangle);
-    }
-
     protected static void DrawOutlinedText(
         Graphics graphics,
         string text,
@@ -879,11 +586,10 @@ internal abstract class LayeredOverlayForm : Form
         {
             for (var y = -2; y <= 2; y++)
             {
-                if (x == 0 && y == 0)
+                if (x != 0 || y != 0)
                 {
-                    continue;
+                    graphics.DrawString(text, font, blackBrush, location.X + x, location.Y + y);
                 }
-                graphics.DrawString(text, font, blackBrush, location.X + x, location.Y + y);
             }
         }
 
@@ -895,183 +601,6 @@ internal abstract class LayeredOverlayForm : Form
     {
         base.OnSizeChanged(e);
         RenderLayer();
-    }
-
-    protected override void OnResizeEnd(EventArgs e)
-    {
-        base.OnResizeEnd(e);
-        ResizeFinished();
-    }
-
-    protected virtual void ResizeFinished()
-    {
-    }
-
-    protected override void WndProc(ref Message message)
-    {
-        switch (message.Msg)
-        {
-            case WmNcHitTest:
-                if (!IsShiftPressed())
-                {
-                    message.Result = HtTransparent;
-                    return;
-                }
-
-                var screenPoint = new Point(
-                    unchecked((short)((long)message.LParam & 0xFFFF)),
-                    unchecked((short)(((long)message.LParam >> 16) & 0xFFFF)));
-                var hit = HitTestInteractive(PointToClient(screenPoint));
-                message.Result = hit switch
-                {
-                    OverlayHitTest.Client => HtClient,
-                    OverlayHitTest.Move => HtCaption,
-                    OverlayHitTest.ResizeRight => HtRight,
-                    OverlayHitTest.ResizeBottom => HtBottom,
-                    OverlayHitTest.ResizeBottomRight => HtBottomRight,
-                    _ => HtTransparent
-                };
-                return;
-
-            case WmLButtonUp when IsShiftPressed():
-                if (_manualOperation is not OverlayHitTest.Transparent)
-                {
-                    FinishManualOperation();
-                    return;
-                }
-                HandleClick(PointFromLParam(message.LParam));
-                break;
-
-            case WmNcLButtonDown when IsShiftPressed():
-                var operation = (int)message.WParam switch
-                {
-                    HtCaption => OverlayHitTest.Move,
-                    HtRight => OverlayHitTest.ResizeRight,
-                    HtBottom => OverlayHitTest.ResizeBottom,
-                    HtBottomRight => OverlayHitTest.ResizeBottomRight,
-                    _ => OverlayHitTest.Transparent
-                };
-                if (operation is not OverlayHitTest.Transparent
-                    && GetCursorPos(out _operationStartCursor))
-                {
-                    StartManualOperation(operation, _operationStartCursor);
-                    message.Result = nint.Zero;
-                    return;
-                }
-                break;
-
-            case WmMouseMove when _manualOperation is not OverlayHitTest.Transparent:
-                if (IsShiftPressed() && GetCursorPos(out var currentPoint))
-                {
-                    ApplyManualOperation(currentPoint);
-                }
-                else
-                {
-                    FinishManualOperation();
-                }
-                message.Result = nint.Zero;
-                return;
-
-            case WmNcLButtonUp when _manualOperation is not OverlayHitTest.Transparent:
-                FinishManualOperation();
-                message.Result = nint.Zero;
-                return;
-
-            case WmMouseWheel when IsShiftPressed():
-                HandleMouseWheel(unchecked((short)(((long)message.WParam >> 16) & 0xFFFF)));
-                message.Result = nint.Zero;
-                return;
-
-            case WmEnterSizeMove:
-                IsInSizeMove = true;
-                break;
-
-            case WmExitSizeMove:
-                IsInSizeMove = false;
-                ResizeFinished();
-                break;
-        }
-
-        base.WndProc(ref message);
-    }
-
-    private static Point PointFromLParam(nint value)
-    {
-        return new Point(
-            unchecked((short)((long)value & 0xFFFF)),
-            unchecked((short)(((long)value >> 16) & 0xFFFF)));
-    }
-
-    private static bool IsShiftPressed() => GlobalShiftKeyState.IsPressed;
-
-    private void UpdateClickThroughStyle()
-    {
-        if (!IsHandleCreated)
-        {
-            return;
-        }
-
-        var current = GetWindowLongPtr(Handle, GwlExStyle).ToInt64();
-        var updated = InteractionEnabled
-            ? current & ~WsExTransparent
-            : current | WsExTransparent;
-        if (updated != current)
-        {
-            SetWindowLongPtr(Handle, GwlExStyle, new nint(updated));
-            // WS_EX_TRANSPARENT affects hit testing. Force Windows to invalidate
-            // its cached non-client/style state so pressing Shift takes effect
-            // even while a DirectX game owns the foreground input queue.
-            SetWindowPos(
-                Handle,
-                nint.Zero,
-                0,
-                0,
-                0,
-                0,
-                SwpNoSize | SwpNoMove | SwpNoZOrder | SwpNoActivate | SwpFrameChanged);
-        }
-    }
-
-    private void ApplyManualOperation(NativePoint currentPoint)
-    {
-        var deltaX = currentPoint.X - _operationStartCursor.X;
-        var deltaY = currentPoint.Y - _operationStartCursor.Y;
-        if (_manualOperation == OverlayHitTest.Move)
-        {
-            Location = new Point(
-                _operationStartBounds.X + deltaX,
-                _operationStartBounds.Y + deltaY);
-            return;
-        }
-
-        var minimumWidth = Math.Max(1, MinimumSize.Width);
-        var minimumHeight = Math.Max(1, MinimumSize.Height);
-        var maximumWidth = MaximumSize.Width > 0 ? MaximumSize.Width : 1600;
-        var maximumHeight = MaximumSize.Height > 0 ? MaximumSize.Height : 1600;
-        var width = _manualOperation is OverlayHitTest.ResizeRight or OverlayHitTest.ResizeBottomRight
-            ? Math.Clamp(_operationStartBounds.Width + deltaX, minimumWidth, maximumWidth)
-            : _operationStartBounds.Width;
-        var height = _manualOperation is OverlayHitTest.ResizeBottom or OverlayHitTest.ResizeBottomRight
-            ? Math.Clamp(_operationStartBounds.Height + deltaY, minimumHeight, maximumHeight)
-            : _operationStartBounds.Height;
-        Size = new Size(width, height);
-    }
-
-    private void StartManualOperation(OverlayHitTest operation, NativePoint startPoint)
-    {
-        _manualOperation = operation;
-        _operationStartCursor = startPoint;
-        _operationStartBounds = Bounds;
-        IsInSizeMove = true;
-        Capture = true;
-    }
-
-    private void FinishManualOperation()
-    {
-        _manualOperation = OverlayHitTest.Transparent;
-        IsInSizeMove = false;
-        Capture = false;
-        ResizeFinished();
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -1140,36 +669,11 @@ internal abstract class LayeredOverlayForm : Form
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetWindowRect(nint window, out NativeRectangle rectangle);
 
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetCursorPos(out NativePoint point);
-
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
     private static extern nint GetWindowLongPtr(nint window, int index);
 
     [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)]
     private static extern nint SetWindowLongPtr(nint window, int index, nint value);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool SetWindowPos(
-        nint window,
-        nint insertAfter,
-        int x,
-        int y,
-        int width,
-        int height,
-        uint flags);
-}
-
-internal enum OverlayHitTest
-{
-    Transparent,
-    Client,
-    Move,
-    ResizeRight,
-    ResizeBottom,
-    ResizeBottomRight
 }
 
 internal sealed class StatsOverlayForm : LayeredOverlayForm
@@ -1177,19 +681,15 @@ internal sealed class StatsOverlayForm : LayeredOverlayForm
     public const int SideWidth = 205;
     public const int HorizontalHeight = 34;
     private readonly Font _textFont = new("Segoe UI", 12F, FontStyle.Bold, GraphicsUnit.Pixel);
-    private readonly Font _moreFont = new("Segoe UI", 13F, FontStyle.Bold, GraphicsUnit.Pixel);
     private long _adena;
     private long _xp;
     private long _sp;
     private bool _horizontal;
     private OverlayPlacement _placement = OverlayPlacement.Right;
-    private Rectangle _moreBounds = new(2, 68, 105, 25);
 
     public StatsOverlayForm() : base(new Size(SideWidth, 96))
     {
     }
-
-    public event Action? MoreClicked;
 
     public static Size GetOverlaySize(OverlayPlacement placement, Size captureSize) => placement switch
     {
@@ -1230,97 +730,58 @@ internal sealed class StatsOverlayForm : LayeredOverlayForm
 
     protected override void DrawLayer(Graphics graphics, Size size)
     {
-        var values = new[]
-        {
-            $"Adena: {_adena:N0}",
-            $"XP: {_xp:N0}",
-            $"SP: {_sp:N0}",
-            "More ▾"
-        };
+        var values = new[] { $"Adena: {_adena:N0}", $"XP: {_xp:N0}", $"SP: {_sp:N0}" };
         if (_horizontal)
         {
-            var cellWidth = size.Width / 4F;
+            var cellWidth = size.Width / 3F;
             for (var index = 0; index < values.Length; index++)
             {
-                var cell = RectangleF.FromLTRB(
-                    index * cellWidth,
-                    0,
-                    (index + 1) * cellWidth,
-                    size.Height);
-                if (index == 3)
-                {
-                    _moreBounds = Rectangle.Round(cell);
-                    FillInvisibleHitArea(graphics, _moreBounds);
-                }
                 DrawFittedOutlinedText(
                     graphics,
                     values[index],
-                    index == 3 ? _moreFont : _textFont,
-                    cell,
-                    TextEdgeAlignment.Center,
-                    index == 3 && InteractionEnabled ? Color.LightGreen : null);
+                    RectangleF.FromLTRB(
+                        index * cellWidth,
+                        0,
+                        (index + 1) * cellWidth,
+                        size.Height),
+                    TextEdgeAlignment.Center);
             }
             return;
         }
 
-        var rowHeight = size.Height / 4F;
+        var rowHeight = size.Height / 3F;
         for (var index = 0; index < values.Length; index++)
         {
-            var row = RectangleF.FromLTRB(
-                0,
-                index * rowHeight,
-                size.Width,
-                (index + 1) * rowHeight);
-            if (index == 3)
-            {
-                _moreBounds = Rectangle.Round(row);
-                FillInvisibleHitArea(graphics, _moreBounds);
-            }
             DrawFittedOutlinedText(
                 graphics,
                 values[index],
-                index == 3 ? _moreFont : _textFont,
-                row,
+                RectangleF.FromLTRB(0, index * rowHeight, size.Width, (index + 1) * rowHeight),
                 _placement == OverlayPlacement.Left
                     ? TextEdgeAlignment.Right
-                    : TextEdgeAlignment.Left,
-                index == 3 && InteractionEnabled ? Color.LightGreen : null);
+                    : TextEdgeAlignment.Left);
         }
     }
 
-    protected override OverlayHitTest HitTestInteractive(Point point) =>
-        _moreBounds.Contains(point) ? OverlayHitTest.Client : OverlayHitTest.Transparent;
-
-    protected override void HandleClick(Point point)
-    {
-        if (_moreBounds.Contains(point))
-        {
-            MoreClicked?.Invoke();
-        }
-    }
-
-    private static void DrawFittedOutlinedText(
+    private void DrawFittedOutlinedText(
         Graphics graphics,
         string text,
-        Font baseFont,
         RectangleF bounds,
-        TextEdgeAlignment alignment,
-        Color? color)
+        TextEdgeAlignment alignment)
     {
         var availableWidth = Math.Max(1F, bounds.Width - 8F);
         var availableHeight = Math.Max(1F, bounds.Height - 4F);
-        var measured = graphics.MeasureString(text, baseFont);
+        var measured = graphics.MeasureString(text, _textFont);
         var scale = Math.Min(1F, Math.Min(
             availableWidth / Math.Max(1F, measured.Width),
             availableHeight / Math.Max(1F, measured.Height)));
         using var fittedFont = scale < 0.99F
             ? new Font(
-                baseFont.FontFamily,
-                Math.Max(7F, baseFont.Size * scale),
-                baseFont.Style,
+                _textFont.FontFamily,
+                Math.Max(7F, _textFont.Size * scale),
+                _textFont.Style,
                 GraphicsUnit.Pixel)
             : null;
-        var font = fittedFont ?? baseFont;
+        var font = fittedFont ?? _textFont;
         measured = graphics.MeasureString(text, font);
         var x = alignment switch
         {
@@ -1328,10 +789,11 @@ internal sealed class StatsOverlayForm : LayeredOverlayForm
             TextEdgeAlignment.Right => bounds.Right - measured.Width - 4F,
             _ => bounds.Left + Math.Max(4F, (bounds.Width - measured.Width) / 2F)
         };
-        var location = new PointF(
-            x,
-            bounds.Top + Math.Max(1F, (bounds.Height - measured.Height) / 2F));
-        DrawOutlinedText(graphics, text, font, location, color);
+        DrawOutlinedText(
+            graphics,
+            text,
+            font,
+            new PointF(x, bounds.Top + Math.Max(1F, (bounds.Height - measured.Height) / 2F)));
     }
 
     private enum TextEdgeAlignment
@@ -1346,55 +808,6 @@ internal sealed class StatsOverlayForm : LayeredOverlayForm
         if (disposing)
         {
             _textFont.Dispose();
-            _moreFont.Dispose();
-        }
-        base.Dispose(disposing);
-    }
-}
-
-internal sealed class OverlayMenuForm : LayeredOverlayForm
-{
-    public static readonly Size OverlaySize = new(155, 60);
-    private readonly Font _font = new("Segoe UI", 13F, FontStyle.Bold, GraphicsUnit.Pixel);
-    private readonly Rectangle _itemsBounds = new(0, 0, 150, 28);
-    private readonly Rectangle _questBounds = new(0, 30, 150, 28);
-
-    public OverlayMenuForm() : base(OverlaySize)
-    {
-    }
-
-    public event Action<bool>? CategorySelected;
-
-    protected override void DrawLayer(Graphics graphics, Size size)
-    {
-        FillInvisibleHitArea(graphics, _itemsBounds);
-        FillInvisibleHitArea(graphics, _questBounds);
-        DrawOutlinedText(graphics, "Items", _font, new PointF(3, 3));
-        DrawOutlinedText(graphics, "Quest Items", _font, new PointF(3, 33));
-    }
-
-    protected override OverlayHitTest HitTestInteractive(Point point) =>
-        _itemsBounds.Contains(point) || _questBounds.Contains(point)
-            ? OverlayHitTest.Client
-            : OverlayHitTest.Transparent;
-
-    protected override void HandleClick(Point point)
-    {
-        if (_itemsBounds.Contains(point))
-        {
-            CategorySelected?.Invoke(false);
-        }
-        else if (_questBounds.Contains(point))
-        {
-            CategorySelected?.Invoke(true);
-        }
-    }
-
-    protected override void Dispose(bool disposing)
-    {
-        if (disposing)
-        {
-            _font.Dispose();
         }
         base.Dispose(disposing);
     }
@@ -1402,41 +815,32 @@ internal sealed class OverlayMenuForm : LayeredOverlayForm
 
 internal sealed class LootOverlayForm : LayeredOverlayForm
 {
-    private const int HeaderHeight = 31;
-    private const int RowHeight = 23;
-    private const int ResizeGrip = 14;
+    private const int HeaderHeight = 29;
+    private const int RowHeight = 22;
     private readonly Font _titleFont = new("Segoe UI", 14F, FontStyle.Bold, GraphicsUnit.Pixel);
     private readonly Font _itemFont = new("Segoe UI", 12F, FontStyle.Bold, GraphicsUnit.Pixel);
-    private readonly Font _hintFont = new("Segoe UI", 10F, FontStyle.Bold, GraphicsUnit.Pixel);
+    private readonly Font _overflowFont = new("Segoe UI", 10F, FontStyle.Bold, GraphicsUnit.Pixel);
     private IReadOnlyList<OverlayItem> _items = [];
     private string _title = "Items";
-    private int _scrollOffset;
 
-    public LootOverlayForm() : base(new Size(320, 320))
+    public LootOverlayForm() : base(new Size(320, 250))
     {
-        MinimumSize = new Size(220, 120);
-        MaximumSize = new Size(1200, 1200);
     }
-
-    public event Action? CloseClicked;
-    public event Action<Rectangle>? BoundsChangeCompleted;
 
     public void SetItems(string title, IReadOnlyList<OverlayItem> items)
     {
         _title = title;
         _items = items;
-        ClampScrollOffset();
         RenderLayer();
     }
 
     protected override void DrawLayer(Graphics graphics, Size size)
     {
-        FillInvisibleHitArea(graphics, ClientRectangle);
-        DrawOutlinedText(graphics, _title, _titleFont, new PointF(3, 3));
-        DrawOutlinedText(graphics, "×", _titleFont, new PointF(size.Width - 25, 2));
-
-        var visibleRows = Math.Max(1, (size.Height - HeaderHeight - ResizeGrip) / RowHeight);
-        foreach (var (item, index) in _items.Skip(_scrollOffset).Take(visibleRows).Select((item, index) => (item, index)))
+        DrawOutlinedText(graphics, _title, _titleFont, new PointF(3, 3), Color.Gold);
+        var visibleRows = Math.Max(0, (size.Height - HeaderHeight) / RowHeight);
+        var hasOverflow = _items.Count > visibleRows;
+        var itemRows = hasOverflow ? Math.Max(0, visibleRows - 1) : visibleRows;
+        foreach (var (item, index) in _items.Take(itemRows).Select((item, index) => (item, index)))
         {
             var y = HeaderHeight + index * RowHeight;
             DrawOutlinedText(graphics, item.Name, _itemFont, new PointF(3, y));
@@ -1445,71 +849,16 @@ internal sealed class LootOverlayForm : LayeredOverlayForm
             DrawOutlinedText(graphics, total, _itemFont, new PointF(size.Width - totalWidth - 6, y));
         }
 
-        if (_items.Count == 0)
+        if (_items.Count == 0 && visibleRows > 0)
         {
             DrawOutlinedText(graphics, "No items", _itemFont, new PointF(3, HeaderHeight));
         }
-
-        if (InteractionEnabled)
+        else if (hasOverflow && visibleRows > 0)
         {
-            DrawOutlinedText(
-                graphics,
-                "Shift: move / resize",
-                _hintFont,
-                new PointF(Math.Max(3, size.Width - 125), size.Height - 15),
-                Color.Gainsboro);
+            var hidden = _items.Count - itemRows;
+            var y = HeaderHeight + itemRows * RowHeight;
+            DrawOutlinedText(graphics, $"… +{hidden} more", _overflowFont, new PointF(3, y), Color.Gainsboro);
         }
-    }
-
-    protected override OverlayHitTest HitTestInteractive(Point point)
-    {
-        var nearRight = point.X >= Width - ResizeGrip;
-        var nearBottom = point.Y >= Height - ResizeGrip;
-        if (nearRight && nearBottom)
-        {
-            return OverlayHitTest.ResizeBottomRight;
-        }
-        if (nearRight)
-        {
-            return OverlayHitTest.ResizeRight;
-        }
-        if (nearBottom)
-        {
-            return OverlayHitTest.ResizeBottom;
-        }
-        if (point.Y <= HeaderHeight && point.X < Width - 34)
-        {
-            return OverlayHitTest.Move;
-        }
-        return ClientRectangle.Contains(point) ? OverlayHitTest.Client : OverlayHitTest.Transparent;
-    }
-
-    protected override void HandleClick(Point point)
-    {
-        if (point.X >= Width - 34 && point.Y <= HeaderHeight)
-        {
-            CloseClicked?.Invoke();
-        }
-    }
-
-    protected override void HandleMouseWheel(int delta)
-    {
-        _scrollOffset += delta > 0 ? -1 : 1;
-        ClampScrollOffset();
-        RenderLayer();
-    }
-
-    protected override void ResizeFinished()
-    {
-        ClampScrollOffset();
-        BoundsChangeCompleted?.Invoke(Bounds);
-        RenderLayer();
-    }
-
-    private void ClampScrollOffset()
-    {
-        var visibleRows = Math.Max(1, (Height - HeaderHeight - ResizeGrip) / RowHeight);
-        _scrollOffset = Math.Clamp(_scrollOffset, 0, Math.Max(0, _items.Count - visibleRows));
     }
 
     protected override void Dispose(bool disposing)
@@ -1518,7 +867,7 @@ internal sealed class LootOverlayForm : LayeredOverlayForm
         {
             _titleFont.Dispose();
             _itemFont.Dispose();
-            _hintFont.Dispose();
+            _overflowFont.Dispose();
         }
         base.Dispose(disposing);
     }

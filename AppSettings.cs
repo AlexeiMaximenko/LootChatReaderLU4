@@ -15,14 +15,35 @@ internal sealed class AppSettings
     public string TargetWindowTitle { get; set; } = string.Empty;
     public string TargetWindowClass { get; set; } = string.Empty;
     public OverlayPlacement OverlayPlacement { get; set; } = OverlayPlacement.Off;
-    public int OverlayDetailsX { get; set; }
-    public int OverlayDetailsY { get; set; }
-    public int OverlayDetailsWidth { get; set; } = 320;
-    public int OverlayDetailsHeight { get; set; } = 320;
-    public bool OverlayDetailsPositionSet { get; set; }
+    public bool ShowItemsOverlay { get; set; }
+    public bool ShowQuestItemsOverlay { get; set; }
+    public int ItemsOverlayX { get; set; }
+    public int ItemsOverlayY { get; set; }
+    public int ItemsOverlayWidth { get; set; } = 320;
+    public int ItemsOverlayHeight { get; set; } = 250;
+    public bool ItemsOverlayRegionSet { get; set; }
+    public int QuestItemsOverlayX { get; set; }
+    public int QuestItemsOverlayY { get; set; }
+    public int QuestItemsOverlayWidth { get; set; } = 320;
+    public int QuestItemsOverlayHeight { get; set; } = 250;
+    public bool QuestItemsOverlayRegionSet { get; set; }
 
     [JsonIgnore]
     public Rectangle CaptureRegion => new(CaptureX, CaptureY, CaptureWidth, CaptureHeight);
+
+    [JsonIgnore]
+    public Rectangle ItemsOverlayRegion => new(
+        ItemsOverlayX,
+        ItemsOverlayY,
+        ItemsOverlayWidth,
+        ItemsOverlayHeight);
+
+    [JsonIgnore]
+    public Rectangle QuestItemsOverlayRegion => new(
+        QuestItemsOverlayX,
+        QuestItemsOverlayY,
+        QuestItemsOverlayWidth,
+        QuestItemsOverlayHeight);
 
     [JsonIgnore]
     public bool HasCaptureRegion => CaptureWidth >= 80
@@ -42,6 +63,24 @@ internal sealed class AppSettings
         TargetProcessName = window.ProcessName;
         TargetWindowTitle = window.Title;
         TargetWindowClass = window.ClassName;
+    }
+
+    public void SetItemsOverlayRegion(Rectangle relativeRegion)
+    {
+        ItemsOverlayX = relativeRegion.X;
+        ItemsOverlayY = relativeRegion.Y;
+        ItemsOverlayWidth = relativeRegion.Width;
+        ItemsOverlayHeight = relativeRegion.Height;
+        ItemsOverlayRegionSet = true;
+    }
+
+    public void SetQuestItemsOverlayRegion(Rectangle relativeRegion)
+    {
+        QuestItemsOverlayX = relativeRegion.X;
+        QuestItemsOverlayY = relativeRegion.Y;
+        QuestItemsOverlayWidth = relativeRegion.Width;
+        QuestItemsOverlayHeight = relativeRegion.Height;
+        QuestItemsOverlayRegionSet = true;
     }
 
     public static AppSettings Load(string path)

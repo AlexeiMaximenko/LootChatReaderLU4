@@ -5,11 +5,16 @@ internal sealed class RegionSelectorForm : Form
     private Point _start;
     private Point _current;
     private bool _dragging;
+    private readonly string _instruction;
 
     public Rectangle SelectedRegion { get; private set; }
 
-    public RegionSelectorForm(Rectangle selectionBounds, Rectangle initialRegion)
+    public RegionSelectorForm(
+        Rectangle selectionBounds,
+        Rectangle initialRegion,
+        string instruction = "Drag to select the system chat area. Press Esc to cancel.")
     {
+        _instruction = instruction;
         Bounds = selectionBounds;
         StartPosition = FormStartPosition.Manual;
         FormBorderStyle = FormBorderStyle.None;
@@ -47,9 +52,8 @@ internal sealed class RegionSelectorForm : Form
             e.Graphics.DrawRectangle(border, selection);
         }
 
-        const string instruction = "Drag to select the system chat area. Press Esc to cancel.";
         using var font = new Font("Segoe UI", 16, FontStyle.Bold);
-        var textSize = e.Graphics.MeasureString(instruction, font);
+        var textSize = e.Graphics.MeasureString(_instruction, font);
         var textRect = new RectangleF(
             (ClientSize.Width - textSize.Width) / 2,
             28,
@@ -57,7 +61,7 @@ internal sealed class RegionSelectorForm : Form
             textSize.Height + 12);
         using var textBackground = new SolidBrush(Color.FromArgb(210, 20, 20, 20));
         e.Graphics.FillRectangle(textBackground, textRect);
-        e.Graphics.DrawString(instruction, font, Brushes.White, textRect.X + 12, textRect.Y + 6);
+        e.Graphics.DrawString(_instruction, font, Brushes.White, textRect.X + 12, textRect.Y + 6);
     }
 
     private void OnSelectorMouseDown(object? sender, MouseEventArgs e)
