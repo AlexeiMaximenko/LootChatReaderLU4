@@ -23,7 +23,10 @@ internal sealed class GameOverlayController : IDisposable
     private const uint SwpNoMove = 0x0002;
     private const uint SwpNoActivate = 0x0010;
     private const uint SwpNoOwnerZOrder = 0x0200;
+    private const long WsExTopmost = 0x00000008;
     private static readonly nint HwndTop = nint.Zero;
+    private static readonly nint HwndTopmost = new(-1);
+    private static readonly nint HwndNotTopmost = new(-2);
 
     private readonly AppSettings _settings;
     private readonly Func<nint> _targetWindowProvider;
@@ -156,8 +159,11 @@ internal sealed class GameOverlayController : IDisposable
         _menu.InteractionEnabled = shiftPressed;
         _details.InteractionEnabled = shiftPressed;
 
+        var horizontalStats = placement is OverlayPlacement.Top or OverlayPlacement.Bottom;
+        _stats.SetHorizontal(horizontalStats);
+        var statsSize = StatsOverlayForm.GetOverlaySize(horizontalStats);
         var statsBounds = ClampToBounds(
-            PositionBeside(captureRegion, StatsOverlayForm.OverlaySize, placement),
+            PositionBeside(captureRegion, statsSize, placement),
             windowBounds);
         _stats.SetLayeredBounds(statsBounds);
         _stats.ShowInactive();
@@ -205,6 +211,26 @@ internal sealed class GameOverlayController : IDisposable
 
     private void PlaceDirectlyAboveTarget(nint targetWindow)
     {
+        var targetIsTopmost = (GetWindowLongPtr(targetWindow, -20).ToInt64() & WsExTopmost) != 0;
+        if (targetIsTopmost)
+        {
+            foreach (var window in new LayeredOverlayForm[] { _stats, _menu, _details })
+            {
+                if (window.Visible && window.IsHandleCreated)
+                {
+                    SetWindowPos(
+                        window.Handle,
+                        HwndTopmost,
+                        0,
+                        0,
+                        0,
+                        0,
+                        SwpNoSize | SwpNoMove | SwpNoActivate | SwpNoOwnerZOrder);
+                }
+            }
+            return;
+        }
+
         var overlayHandles = new HashSet<nint>
         {
             _stats.IsHandleCreated ? _stats.Handle : nint.Zero,
@@ -225,6 +251,17 @@ internal sealed class GameOverlayController : IDisposable
                 continue;
             }
 
+            // A game may switch out of its topmost mode at runtime. Explicitly
+            // remove the overlay from the topmost band before restoring its
+            // position directly above the target.
+            SetWindowPos(
+                window.Handle,
+                HwndNotTopmost,
+                0,
+                0,
+                0,
+                0,
+                SwpNoSize | SwpNoMove | SwpNoActivate | SwpNoOwnerZOrder);
             SetWindowPos(
                 window.Handle,
                 zOrderAnchor,
@@ -392,6 +429,9 @@ internal sealed class GameOverlayController : IDisposable
         int width,
         int height,
         uint flags);
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
+    private static extern nint GetWindowLongPtr(nint window, int index);
 }
 
 internal abstract class LayeredOverlayForm : Form
@@ -815,19 +855,33 @@ internal enum OverlayHitTest
 
 internal sealed class StatsOverlayForm : LayeredOverlayForm
 {
-    public static readonly Size OverlaySize = new(205, 96);
+    public static readonly Size VerticalSize = new(205, 96);
+    public static readonly Size HorizontalSize = new(530, 34);
     private readonly Font _textFont = new("Segoe UI", 12F, FontStyle.Bold, GraphicsUnit.Pixel);
     private readonly Font _moreFont = new("Segoe UI", 13F, FontStyle.Bold, GraphicsUnit.Pixel);
-    private readonly Rectangle _moreBounds = new(2, 68, 105, 25);
     private long _adena;
     private long _xp;
     private long _sp;
+    private bool _horizontal;
 
-    public StatsOverlayForm() : base(OverlaySize)
+    public StatsOverlayForm() : base(VerticalSize)
     {
     }
 
     public event Action? MoreClicked;
+
+    public static Size GetOverlaySize(bool horizontal) => horizontal ? HorizontalSize : VerticalSize;
+
+    public void SetHorizontal(bool horizontal)
+    {
+        if (_horizontal == horizontal)
+        {
+            return;
+        }
+
+        _horizontal = horizontal;
+        RenderLayer();
+    }
 
     public void SetStatistics(long adena, long xp, long sp)
     {
@@ -844,23 +898,37 @@ internal sealed class StatsOverlayForm : LayeredOverlayForm
 
     protected override void DrawLayer(Graphics graphics, Size size)
     {
+        if (_horizontal)
+        {
+            DrawOutlinedText(graphics, $"Adena: {_adena:N0}", _textFont, new PointF(3, 5));
+            DrawOutlinedText(graphics, $"XP: {_xp:N0}", _textFont, new PointF(185, 5));
+            DrawOutlinedText(graphics, $"SP: {_sp:N0}", _textFont, new PointF(335, 5));
+            FillInvisibleHitArea(graphics, MoreBounds);
+            DrawOutlinedText(graphics, "More ▾", _moreFont, new PointF(445, 4));
+            return;
+        }
+
         DrawOutlinedText(graphics, $"Adena: {_adena:N0}", _textFont, new PointF(3, 2));
         DrawOutlinedText(graphics, $"XP: {_xp:N0}", _textFont, new PointF(3, 23));
         DrawOutlinedText(graphics, $"SP: {_sp:N0}", _textFont, new PointF(3, 44));
-        FillInvisibleHitArea(graphics, _moreBounds);
+        FillInvisibleHitArea(graphics, MoreBounds);
         DrawOutlinedText(graphics, "More ▾", _moreFont, new PointF(3, 69));
     }
 
     protected override OverlayHitTest HitTestInteractive(Point point) =>
-        _moreBounds.Contains(point) ? OverlayHitTest.Client : OverlayHitTest.Transparent;
+        MoreBounds.Contains(point) ? OverlayHitTest.Client : OverlayHitTest.Transparent;
 
     protected override void HandleClick(Point point)
     {
-        if (_moreBounds.Contains(point))
+        if (MoreBounds.Contains(point))
         {
             MoreClicked?.Invoke();
         }
     }
+
+    private Rectangle MoreBounds => _horizontal
+        ? new Rectangle(438, 0, 92, 34)
+        : new Rectangle(2, 68, 105, 25);
 
     protected override void Dispose(bool disposing)
     {

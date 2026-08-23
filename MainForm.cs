@@ -629,9 +629,20 @@ internal sealed class TrackerView : UserControl
         var chatWheelRevisionAtCaptureStart = _chatWheelRevision;
         try
         {
-            var targetWindow = ScreenCaptureService.ResolveWindow(_settings, _targetWindowHandle)
-                ?? throw new InvalidOperationException("The selected game window is no longer running.");
+            var targetWindow = ScreenCaptureService.ResolveWindow(_settings, _targetWindowHandle);
+            if (targetWindow is null)
+            {
+                _eventTracker.BeginResynchronization();
+                SetStatus("Monitoring is running · OCR paused: game window unavailable.", true);
+                return;
+            }
             _targetWindowHandle = targetWindow.Handle;
+            if (targetWindow.IsMinimized)
+            {
+                _eventTracker.BeginResynchronization();
+                SetStatus("Monitoring is running · OCR paused while the game window is minimized.", true);
+                return;
+            }
             using var screenshot = await Task.Run(() => ScreenCaptureService.CaptureWindowRegion(
                 targetWindow.Handle,
                 _settings.CaptureRegion,
@@ -679,7 +690,7 @@ internal sealed class TrackerView : UserControl
         catch (WindowCaptureUnavailableException exception)
         {
             _eventTracker.BeginResynchronization();
-            SetStatus($"Monitoring is waiting for a game frame · {exception.Message}", false);
+            SetStatus($"Monitoring is running · OCR paused: {exception.Message}", true);
         }
         catch (Exception exception)
         {

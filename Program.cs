@@ -46,7 +46,25 @@ internal static class Program
 
         if (args.Length >= 2 && args[0].Equals("--overlay-render-test", StringComparison.OrdinalIgnoreCase))
         {
-            RunOverlayRenderTest(args[1], args.Length >= 3 && args[2].Equals("details", StringComparison.OrdinalIgnoreCase));
+            var options = args.Skip(2).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var placement = options.Contains("top")
+                ? OverlayPlacement.Top
+                : options.Contains("bottom")
+                    ? OverlayPlacement.Bottom
+                    : options.Contains("left")
+                        ? OverlayPlacement.Left
+                        : OverlayPlacement.Right;
+            RunOverlayRenderTest(
+                args[1],
+                options.Contains("details"),
+                placement,
+                options.Contains("topmost"));
+            return;
+        }
+
+        if (args.Length >= 1 && args[0].Equals("--window-unavailable-test", StringComparison.OrdinalIgnoreCase))
+        {
+            RunWindowUnavailableTest();
             return;
         }
 
@@ -289,7 +307,9 @@ internal static class Program
             || (statsStyle & wsExNoActivate) == 0
             || (statsStyle & wsExTransparent) == 0
             || details.MinimumSize.Height != 120
-            || details.MaximumSize.Height != 1200)
+            || details.MaximumSize.Height != 1200
+            || StatsOverlayForm.HorizontalSize.Height >= StatsOverlayForm.VerticalSize.Height
+            || StatsOverlayForm.HorizontalSize.Width <= StatsOverlayForm.VerticalSize.Width)
         {
             throw new InvalidOperationException("Overlay window styles or resize limits are incorrect.");
         }
@@ -308,7 +328,11 @@ internal static class Program
         Console.WriteLine("OVERLAY: default off; click-through without Shift; interactive with Shift; height 120..1200");
     }
 
-    private static void RunOverlayRenderTest(string outputPath, bool showDetails)
+    private static void RunOverlayRenderTest(
+        string outputPath,
+        bool showDetails,
+        OverlayPlacement placement,
+        bool targetTopmost)
     {
         using var target = new Form
         {
@@ -317,7 +341,8 @@ internal static class Program
             StartPosition = FormStartPosition.Manual,
             Bounds = new Rectangle(120, 100, 900, 620),
             BackColor = Color.FromArgb(48, 58, 68),
-            ShowInTaskbar = false
+            ShowInTaskbar = false,
+            TopMost = targetTopmost
         };
         var targetHandle = target.Handle;
         var settings = new AppSettings
@@ -329,7 +354,7 @@ internal static class Program
             ReferenceWindowWidth = 900,
             ReferenceWindowHeight = 620,
             TargetProcessName = "diagnostic",
-            OverlayPlacement = OverlayPlacement.Right,
+            OverlayPlacement = placement,
             OverlayDetailsHeight = 230
         };
         using var overlay = new GameOverlayController(settings, () => targetHandle, () => { });
@@ -359,8 +384,11 @@ internal static class Program
         };
         target.Shown += (_, _) =>
         {
-            target.TopMost = true;
-            target.TopMost = false;
+            if (!targetTopmost)
+            {
+                target.TopMost = true;
+                target.TopMost = false;
+            }
             target.Activate();
             target.BringToFront();
             timer.Start();
@@ -368,6 +396,53 @@ internal static class Program
         Application.Run(target);
         timer.Dispose();
         Console.WriteLine($"OVERLAY RENDER: {outputPath}");
+    }
+
+    private static void RunWindowUnavailableTest()
+    {
+        using var target = new Form
+        {
+            Text = "Minimize diagnostic target",
+            StartPosition = FormStartPosition.Manual,
+            Bounds = new Rectangle(100, 100, 640, 480),
+            ShowInTaskbar = false
+        };
+        target.Show();
+        Application.DoEvents();
+
+        using var process = System.Diagnostics.Process.GetCurrentProcess();
+        var settings = new AppSettings
+        {
+            TargetProcessName = process.ProcessName,
+            ReferenceWindowWidth = target.Width,
+            ReferenceWindowHeight = target.Height
+        };
+        var handle = target.Handle;
+        target.WindowState = FormWindowState.Minimized;
+        Application.DoEvents();
+
+        var resolved = ScreenCaptureService.ResolveWindow(settings, handle)
+            ?? throw new InvalidOperationException("A minimized preferred window was lost.");
+        if (resolved.Handle != handle || !resolved.IsMinimized)
+        {
+            throw new InvalidOperationException("The minimized preferred window state was not preserved.");
+        }
+
+        try
+        {
+            using var _ = ScreenCaptureService.CaptureWindowRegion(
+                handle,
+                new Rectangle(0, 0, 320, 160),
+                new Size(target.Width, target.Height));
+            throw new InvalidOperationException("A minimized capture should have been paused.");
+        }
+        catch (WindowCaptureUnavailableException)
+        {
+            // Expected: the monitoring loop keeps running and retries later.
+        }
+
+        target.Close();
+        Console.WriteLine("WINDOW UNAVAILABLE: minimized handle retained; capture paused without a fatal error");
     }
 
     [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]

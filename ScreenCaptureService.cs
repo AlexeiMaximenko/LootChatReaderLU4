@@ -62,16 +62,17 @@ internal static class ScreenCaptureService
 
     public static WindowDescriptor? ResolveWindow(AppSettings settings, nint preferredHandle = default)
     {
-        var windows = EnumerateWindows();
-        if (preferredHandle != nint.Zero)
+        // A minimized window may temporarily disappear from EnumWindows-based
+        // capture candidates because DWM reports its compact iconic bounds. Keep
+        // the already selected handle so monitoring can wait and resume instead
+        // of treating the game as closed.
+        if (preferredHandle != nint.Zero
+            && TryDescribePreferredWindow(preferredHandle, settings, out var preferred))
         {
-            var preferred = windows.FirstOrDefault(window => window.Handle == preferredHandle);
-            if (preferred is not null)
-            {
-                return preferred;
-            }
+            return preferred;
         }
 
+        var windows = EnumerateWindows();
         return windows
             .Where(window => window.ProcessName.Equals(settings.TargetProcessName, StringComparison.OrdinalIgnoreCase))
             .OrderByDescending(window => settings.TargetWindowClass.Length > 0
@@ -91,14 +92,30 @@ internal static class ScreenCaptureService
             throw new InvalidOperationException("The selected game window is no longer available.");
         }
 
-        using var windowBitmap = WindowCapture.CaptureWindow(
-            windowHandle,
-            CaptureStrategy.WgcOnly,
-            timeoutMs: 900)
+        if (IsIconic(windowHandle))
+        {
+            throw new WindowCaptureUnavailableException(
+                "The game window is minimized. OCR will resume automatically after it is restored.");
+        }
+
+        Bitmap? capturedWindow;
+        try
+        {
+            capturedWindow = WindowCapture.CaptureWindow(
+                windowHandle,
+                CaptureStrategy.WgcOnly,
+                timeoutMs: 900);
+        }
+        catch (Exception exception) when (!IsWindow(windowHandle) || IsIconic(windowHandle))
+        {
+            throw new WindowCaptureUnavailableException(
+                "The game window became unavailable during capture. OCR will retry automatically.",
+                exception);
+        }
+
+        using var windowBitmap = capturedWindow
             ?? throw new WindowCaptureUnavailableException(
-                IsIconic(windowHandle)
-                    ? "The minimized game window is not producing capture frames. Restore it and leave it behind other windows."
-                    : "Windows Graphics Capture did not return a frame for the selected game window.");
+                "Windows Graphics Capture did not return a frame. OCR will retry automatically.");
 
         var crop = ScaleAndClampRegion(relativeRegion, referenceWindowSize, windowBitmap.Size);
         if (crop.Width < 80 || crop.Height < 30)
@@ -107,6 +124,59 @@ internal static class ScreenCaptureService
         }
 
         return windowBitmap.Clone(crop, PixelFormat.Format24bppRgb);
+    }
+
+    private static bool TryDescribePreferredWindow(
+        nint handle,
+        AppSettings settings,
+        out WindowDescriptor descriptor)
+    {
+        descriptor = null!;
+        if (!IsWindow(handle))
+        {
+            return false;
+        }
+
+        var isMinimized = IsIconic(handle);
+        if (!isMinimized && !IsWindowVisible(handle))
+        {
+            return false;
+        }
+
+        GetWindowThreadProcessId(handle, out var processId);
+        string processName;
+        try
+        {
+            processName = System.Diagnostics.Process.GetProcessById((int)processId).ProcessName;
+        }
+        catch
+        {
+            return false;
+        }
+
+        if (!processName.Equals(settings.TargetProcessName, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (!TryGetWindowBounds(handle, out var bounds))
+        {
+            bounds = new Rectangle(
+                0,
+                0,
+                Math.Max(80, settings.ReferenceWindowWidth),
+                Math.Max(30, settings.ReferenceWindowHeight));
+        }
+
+        descriptor = new WindowDescriptor(
+            handle,
+            processId,
+            processName,
+            ReadWindowText(handle),
+            ReadClassName(handle),
+            bounds,
+            isMinimized);
+        return true;
     }
 
     public static Rectangle GetScreenRegion(
@@ -247,7 +317,17 @@ internal static class ScreenCaptureService
     private static extern bool SetForegroundWindow(nint handle);
 }
 
-internal sealed class WindowCaptureUnavailableException(string message) : Exception(message);
+internal sealed class WindowCaptureUnavailableException : Exception
+{
+    public WindowCaptureUnavailableException(string message) : base(message)
+    {
+    }
+
+    public WindowCaptureUnavailableException(string message, Exception innerException)
+        : base(message, innerException)
+    {
+    }
+}
 
 internal sealed record WindowDescriptor(
     nint Handle,
