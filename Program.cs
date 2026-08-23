@@ -954,6 +954,26 @@ internal static class Program
             return bitmap;
         }
 
+        static Bitmap CreateBusyChatFrame(IReadOnlyList<string> sourceLines)
+        {
+            var bitmap = new Bitmap(380, 160, System.Drawing.Imaging.PixelFormat.Format24bppRgb);
+            using var graphics = Graphics.FromImage(bitmap);
+            graphics.Clear(Color.FromArgb(24, 27, 25));
+            graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.SingleBitPerPixelGridFit;
+            using var font = new Font("Segoe UI", 12F, FontStyle.Regular, GraphicsUnit.Pixel);
+            using var gray = new SolidBrush(Color.FromArgb(185, 185, 185));
+            using var yellow = new SolidBrush(Color.FromArgb(235, 220, 20));
+            var visible = sourceLines.TakeLast(7).ToArray();
+            for (var index = 0; index < visible.Length; index++)
+            {
+                var brush = visible[index].Contains("obtained", StringComparison.OrdinalIgnoreCase)
+                    ? yellow
+                    : gray;
+                graphics.DrawString(visible[index], font, brush, 8, 10 + index * 20);
+            }
+            return bitmap;
+        }
+
         using var first = CreateFrame(0);
         using var moved = CreateFrame(-15);
         var detector = new ChatFrameMotionDetector();
@@ -1024,9 +1044,55 @@ internal static class Program
                 $"Pure Mana Crystal OCR failed: {pureMana?.RawText ?? "none"}.");
         }
 
+
+        var busyLines = new List<string>
+        {
+            "Power of the spirits enabled.",
+            "Use Soulshot (D-Grade).",
+            "Kelias Monster Eye Searcher 405",
+            "Power of the spirits enabled.",
+            "Use Soulshot (D-Grade).",
+            "Kelias landed a critical hit!",
+            "Power of the spirits enabled."
+        };
+        var busyDetector = new ChatFrameMotionDetector();
+        var busyTracker = new EventSequenceTracker();
+        using (var baselineFrame = CreateBusyChatFrame(busyLines))
+        {
+            busyDetector.Observe(baselineFrame);
+            busyTracker.SetBaselineImmediately(grayOcr.ReadEvents(baselineFrame));
+        }
+        var acceptedExperience = 0;
+        for (var kill = 0; kill < 6; kill++)
+        {
+            foreach (var message in new[]
+                     {
+                         "You have acquired 1579 XP and 158 SP.",
+                         $"You have obtained {410 + kill} Adena.",
+                         "Power of the spirits enabled."
+                     })
+            {
+                busyLines.Add(message);
+                using var busyFrame = CreateBusyChatFrame(busyLines);
+                var busyShift = busyDetector.Observe(busyFrame);
+                var busyEvents = grayOcr.ReadEvents(busyFrame);
+                var busyAccepted = busyTracker.Observe(
+                        busyEvents,
+                        busyShift,
+                        busyDetector.LastNewLineBands);
+                acceptedExperience += busyAccepted.Count(item => item.Kind == DetectedEventKind.Experience);
+            }
+        }
+        if (acceptedExperience != 6)
+        {
+            throw new InvalidOperationException(
+                $"Busy repeated XP sequence failed: expected 6, accepted {acceptedExperience}.");
+        }
+
         Console.WriteLine(
             $"FRAME MOTION: colored={shift}; gray={grayShift}; " +
-            $"repeated XP accepted={newlyAccepted.Count}; Pure Mana Crystal=OK; stationary=0");
+            $"repeated XP accepted={newlyAccepted.Count}; busy XP={acceptedExperience}/6; " +
+            $"Pure Mana Crystal=OK; stationary=0");
     }
 
     private static void RunSequenceTest()

@@ -47,13 +47,13 @@ internal sealed class ChatFrameMotionDetector
         var stationary = ScoreShift(_previousMask, currentMask, _width, _height, 0);
         var best = stationary;
         var bestShift = 0;
-        for (var shift = -MaximumShift; shift <= MaximumShift; shift++)
+        // Live chat advances only upward. Searching positive offsets lets a
+        // repeating XP/Adena/message pattern align with an older occurrence
+        // below it (for example +40 instead of the real -20), which discards the
+        // newly appended row. Manual wheel navigation is handled separately by
+        // MouseWheelMonitor and must never produce loot.
+        for (var shift = -MaximumShift; shift <= -MinimumMovement; shift++)
         {
-            if (shift == 0)
-            {
-                continue;
-            }
-
             var score = ScoreShift(_previousMask, currentMask, _width, _height, shift);
             if (score.Score > best.Score + 0.001
                 || (Math.Abs(score.Score - best.Score) <= 0.001
@@ -69,7 +69,7 @@ internal sealed class ChatFrameMotionDetector
             && best.Score >= MinimumScore
             && best.Score >= stationary.Score + MinimumImprovementOverStationary;
         LastConfidence = best.Score;
-        LastNewLineBands = validShift && bestShift < 0
+        LastNewLineBands = validShift
             ? FindNewLineBands(_previousMask, currentMask, _width, _height, bestShift)
             : [];
         _previousMask = currentMask;

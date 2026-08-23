@@ -1,6 +1,6 @@
 # LootChatReaderLU4
 
-Current version: **1.18**
+Current version: **1.19**
 
 LootChatReaderLU4 is a local Windows application that reads the LU4 system chat from a selected screen area and keeps loot statistics.
 
