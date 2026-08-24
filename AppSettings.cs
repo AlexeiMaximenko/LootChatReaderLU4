@@ -27,6 +27,12 @@ internal sealed class AppSettings
     public int QuestItemsOverlayWidth { get; set; } = 320;
     public int QuestItemsOverlayHeight { get; set; } = 250;
     public bool QuestItemsOverlayRegionSet { get; set; }
+    public bool EnableAssistHelper { get; set; }
+    public int AssistX { get; set; }
+    public int AssistY { get; set; }
+    public int AssistWidth { get; set; }
+    public int AssistHeight { get; set; }
+    public bool AssistRegionSet { get; set; }
 
     [JsonIgnore]
     public Rectangle CaptureRegion => new(CaptureX, CaptureY, CaptureWidth, CaptureHeight);
@@ -44,6 +50,9 @@ internal sealed class AppSettings
         QuestItemsOverlayY,
         QuestItemsOverlayWidth,
         QuestItemsOverlayHeight);
+
+    [JsonIgnore]
+    public Rectangle AssistRegion => new(AssistX, AssistY, AssistWidth, AssistHeight);
 
     [JsonIgnore]
     public bool HasCaptureRegion => CaptureWidth >= 80
@@ -82,6 +91,15 @@ internal sealed class AppSettings
         QuestItemsOverlayWidth = relativeRegion.Width;
         QuestItemsOverlayHeight = relativeRegion.Height;
         QuestItemsOverlayRegionSet = true;
+    }
+
+    public void SetAssistRegion(Rectangle relativeRegion)
+    {
+        AssistX = relativeRegion.X;
+        AssistY = relativeRegion.Y;
+        AssistWidth = relativeRegion.Width;
+        AssistHeight = relativeRegion.Height;
+        AssistRegionSet = true;
     }
 
     public static AppSettings Load(string path)

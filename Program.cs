@@ -99,6 +99,12 @@ internal static class Program
             return;
         }
 
+        if (args.Length >= 1 && args[0].Equals("--assist-click-test", StringComparison.OrdinalIgnoreCase))
+        {
+            RunAssistClickTest();
+            return;
+        }
+
         if (args.Length >= 1 && args[0].Equals("--catalog-resolve-test", StringComparison.OrdinalIgnoreCase))
         {
             RunCatalogResolveTest();
@@ -247,7 +253,13 @@ internal static class Program
                     QuestItemsOverlayY = 220,
                     QuestItemsOverlayWidth = 300,
                     QuestItemsOverlayHeight = 240,
-                    QuestItemsOverlayRegionSet = true
+                    QuestItemsOverlayRegionSet = true,
+                    EnableAssistHelper = true,
+                    AssistX = 300,
+                    AssistY = 200,
+                    AssistWidth = 180,
+                    AssistHeight = 120,
+                    AssistRegionSet = true
                 }
             };
             first.Histories.Add(new TrackingHistory
@@ -289,7 +301,9 @@ internal static class Program
                 || loaded.Profiles.Single(profile => profile.Name == "Window 1").Settings.ItemsOverlayWidth != 480
                 || loaded.Profiles.Single(profile => profile.Name == "Window 1").Settings.ItemsOverlayX != 420
                 || !loaded.Profiles.Single(profile => profile.Name == "Window 1").Settings.ShowQuestItemsOverlay
-                || loaded.Profiles.Single(profile => profile.Name == "Window 1").Settings.QuestItemsOverlayHeight != 240)
+                || loaded.Profiles.Single(profile => profile.Name == "Window 1").Settings.QuestItemsOverlayHeight != 240
+                || !loaded.Profiles.Single(profile => profile.Name == "Window 1").Settings.EnableAssistHelper
+                || loaded.Profiles.Single(profile => profile.Name == "Window 1").Settings.AssistWidth != 180)
             {
                 throw new InvalidOperationException("Workspace/history round-trip failed.");
             }
@@ -1261,6 +1275,19 @@ internal static class Program
             throw new InvalidOperationException(
                 $"Damaged XP OCR text was not recovered: {damagedExperience?.Value ?? "none"}.");
         }
+        var partyDrop = OcrService.ParseDiagnosticText(
+            "KeliasSpoil has obtained Animal Skin.",
+            TextMask.Yellow);
+        var partyExperience = OcrService.ParseDiagnosticText(
+            "KeliasSpoil has acquired 2000 XP and 160 SP.",
+            TextMask.White);
+        var prefixedFakeOwnership = OcrService.ParseDiagnosticText(
+            "KeliasSpoil: You have obtained Animal Skin.",
+            TextMask.Yellow);
+        if (partyDrop is not null || partyExperience is not null || prefixedFakeOwnership is not null)
+        {
+            throw new InvalidOperationException("Another party member's loot was accepted as the local player's event.");
+        }
         tracker.SetBaselineImmediately(Array.Empty<DetectedEvent>());
         RequireCount(
             "gray XP/SP without yellow loot",
@@ -1271,6 +1298,72 @@ internal static class Program
             1);
 
         Console.WriteLine("SEQUENCE: OK");
+    }
+
+    private static void RunAssistClickTest()
+    {
+        var rightDown = 0;
+        var rightUp = 0;
+        using var target = new Form
+        {
+            Text = "Assist click target",
+            StartPosition = FormStartPosition.Manual,
+            Bounds = new Rectangle(120, 120, 640, 480),
+            ShowInTaskbar = false
+        };
+        target.MouseDown += (_, args) =>
+        {
+            if (args.Button == MouseButtons.Right)
+            {
+                rightDown++;
+            }
+        };
+        target.MouseUp += (_, args) =>
+        {
+            if (args.Button == MouseButtons.Right)
+            {
+                rightUp++;
+            }
+        };
+        target.Show();
+        Application.DoEvents();
+
+        using var cover = new Form
+        {
+            Text = "Covering window",
+            StartPosition = FormStartPosition.Manual,
+            Bounds = target.Bounds,
+            ShowInTaskbar = false,
+            TopMost = true
+        };
+        cover.Show();
+        cover.BringToFront();
+        Application.DoEvents();
+
+        var posted = BackgroundRightClickService.TryPostRandomClick(
+            target.Handle,
+            new Rectangle(80, 80, 220, 160),
+            target.Size);
+        Application.DoEvents();
+        if (!posted || rightDown != 1 || rightUp != 1)
+        {
+            throw new InvalidOperationException(
+                $"Covered background right-click failed: posted={posted}, down={rightDown}, up={rightUp}.");
+        }
+
+        for (var index = 0; index < 1000; index++)
+        {
+            var interval = BackgroundRightClickService.NextInterval();
+            if (interval is < BackgroundRightClickService.MinimumIntervalMilliseconds
+                or > BackgroundRightClickService.MaximumIntervalMilliseconds)
+            {
+                throw new InvalidOperationException($"Assist interval was outside 50-500 ms: {interval}.");
+            }
+        }
+
+        cover.Close();
+        target.Close();
+        Console.WriteLine("ASSIST CLICK: covered target received RMB down/up; random interval stayed within 50-500 ms");
     }
 
     private static void RunWindowListTest()

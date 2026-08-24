@@ -6,10 +6,13 @@ internal sealed class OverlaySettingsForm : Form
     private readonly ComboBox _statsPlacement = new();
     private readonly Label _itemsRegionLabel = new();
     private readonly Label _questRegionLabel = new();
+    private readonly Label _assistRegionLabel = new();
     private Rectangle _itemsRegion;
     private Rectangle _questRegion;
+    private Rectangle _assistRegion;
     private bool _itemsRegionSet;
     private bool _questRegionSet;
+    private bool _assistRegionSet;
 
     public OverlaySettingsForm(
         AppSettings settings,
@@ -18,16 +21,18 @@ internal sealed class OverlaySettingsForm : Form
         _selectRegion = selectRegion;
         _itemsRegion = settings.ItemsOverlayRegion;
         _questRegion = settings.QuestItemsOverlayRegion;
+        _assistRegion = settings.AssistRegion;
         _itemsRegionSet = settings.ItemsOverlayRegionSet;
         _questRegionSet = settings.QuestItemsOverlayRegionSet;
+        _assistRegionSet = settings.AssistRegionSet;
 
-        Text = "Overlay Settings";
+        Text = "Overlay and Assist Settings";
         StartPosition = FormStartPosition.CenterParent;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MinimizeBox = false;
         MaximizeBox = false;
         ShowInTaskbar = false;
-        ClientSize = new Size(520, 390);
+        ClientSize = new Size(560, 500);
         Font = new Font("Segoe UI", 9F);
 
         BuildInterface(settings.OverlayPlacement);
@@ -41,8 +46,10 @@ internal sealed class OverlaySettingsForm : Form
 
     public Rectangle ItemsRegion => _itemsRegion;
     public Rectangle QuestItemsRegion => _questRegion;
+    public Rectangle AssistRegion => _assistRegion;
     public bool ItemsRegionSet => _itemsRegionSet;
     public bool QuestItemsRegionSet => _questRegionSet;
+    public bool AssistRegionSet => _assistRegionSet;
 
     private void BuildInterface(OverlayPlacement placement)
     {
@@ -51,9 +58,10 @@ internal sealed class OverlaySettingsForm : Form
             Dock = DockStyle.Fill,
             Padding = new Padding(14),
             ColumnCount = 1,
-            RowCount = 5
+            RowCount = 6
         };
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 70));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 102));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 102));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 102));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -105,21 +113,26 @@ internal sealed class OverlaySettingsForm : Form
             "Obtained items overlay",
             "Choose the exact position and size inside the selected game window.",
             _itemsRegionLabel,
-            async () => await SelectRegionAsync(false)), 0, 1);
+            async () => await SelectRegionAsync(RegionKind.Items)), 0, 1);
         root.Controls.Add(CreateRegionGroup(
             "Quest items overlay",
             "Choose an independent position and size for quest items.",
             _questRegionLabel,
-            async () => await SelectRegionAsync(true)), 0, 2);
+            async () => await SelectRegionAsync(RegionKind.QuestItems)), 0, 2);
+        root.Controls.Add(CreateRegionGroup(
+            "Assist right-click area",
+            "Choose where randomized background right-clicks may be sent.",
+            _assistRegionLabel,
+            async () => await SelectRegionAsync(RegionKind.Assist)), 0, 3);
 
         var note = new Label
         {
-            Text = "Visibility is controlled by the two checkboxes on the tracker main page.",
+            Text = "Overlay visibility and the assist helper are controlled on the tracker main page.",
             Dock = DockStyle.Fill,
             ForeColor = Color.DimGray,
             TextAlign = ContentAlignment.MiddleLeft
         };
-        root.Controls.Add(note, 0, 3);
+        root.Controls.Add(note, 0, 4);
 
         var buttons = new FlowLayoutPanel
         {
@@ -144,7 +157,7 @@ internal sealed class OverlaySettingsForm : Form
         };
         buttons.Controls.Add(ok);
         buttons.Controls.Add(cancel);
-        root.Controls.Add(buttons, 0, 4);
+        root.Controls.Add(buttons, 0, 5);
 
         AcceptButton = ok;
         CancelButton = cancel;
@@ -197,12 +210,20 @@ internal sealed class OverlaySettingsForm : Form
         return group;
     }
 
-    private async Task SelectRegionAsync(bool questItems)
+    private async Task SelectRegionAsync(RegionKind kind)
     {
-        var initial = questItems
-            ? (_questRegionSet ? _questRegion : Rectangle.Empty)
-            : (_itemsRegionSet ? _itemsRegion : Rectangle.Empty);
-        var label = questItems ? "quest-items overlay" : "obtained-items overlay";
+        var initial = kind switch
+        {
+            RegionKind.QuestItems => _questRegionSet ? _questRegion : Rectangle.Empty,
+            RegionKind.Assist => _assistRegionSet ? _assistRegion : Rectangle.Empty,
+            _ => _itemsRegionSet ? _itemsRegion : Rectangle.Empty
+        };
+        var label = kind switch
+        {
+            RegionKind.QuestItems => "quest-items overlay",
+            RegionKind.Assist => "assist right-click area",
+            _ => "obtained-items overlay"
+        };
         Enabled = false;
         // Hiding a modal form makes ShowDialog return immediately. Its caller
         // then disposes the form while this asynchronous area selection is still
@@ -217,10 +238,15 @@ internal sealed class OverlaySettingsForm : Form
                 return;
             }
 
-            if (questItems)
+            if (kind == RegionKind.QuestItems)
             {
                 _questRegion = region;
                 _questRegionSet = true;
+            }
+            else if (kind == RegionKind.Assist)
+            {
+                _assistRegion = region;
+                _assistRegionSet = true;
             }
             else
             {
@@ -244,6 +270,9 @@ internal sealed class OverlaySettingsForm : Form
     {
         _itemsRegionLabel.Text = FormatRegion(_itemsRegion, _itemsRegionSet);
         _questRegionLabel.Text = FormatRegion(_questRegion, _questRegionSet);
+        _assistRegionLabel.Text = _assistRegionSet
+            ? FormatRegion(_assistRegion, true)
+            : "Area not selected — the assist helper remains unavailable.";
     }
 
     private static string FormatRegion(Rectangle region, bool regionSet) => regionSet
@@ -253,5 +282,12 @@ internal sealed class OverlaySettingsForm : Form
     private sealed record PlacementChoice(string Label, OverlayPlacement Value)
     {
         public override string ToString() => Label;
+    }
+
+    private enum RegionKind
+    {
+        Items,
+        QuestItems,
+        Assist
     }
 }

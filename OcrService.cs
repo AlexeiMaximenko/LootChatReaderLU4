@@ -374,22 +374,13 @@ internal sealed partial class OcrService : IDisposable
 
     private static bool HasYouHavePrefix(IReadOnlyList<Match> words, int verbIndex)
     {
-        var youIndex = -1;
-        for (var index = 0; index < verbIndex; index++)
-        {
-            if (youIndex < 0 && BoundedLevenshtein(words[index].Value, "you", 1) <= 1)
-            {
-                youIndex = index;
-                continue;
-            }
-
-            if (youIndex >= 0 && BoundedLevenshtein(words[index].Value, "have", 1) <= 1)
-            {
-                return true;
-            }
-        }
-
-        return false;
+        // Ownership is encoded by the first two words. Do not scan for "You
+        // have" later in the sentence: a party member's nickname at the start
+        // must make the whole row ineligible.
+        return verbIndex >= 2
+            && words.Count >= 2
+            && BoundedLevenshtein(words[0].Value, "you", 1) <= 1
+            && BoundedLevenshtein(words[1].Value, "have", 1) <= 1;
     }
 
     private static int BoundedLevenshtein(string first, string second, int maximum)
@@ -486,10 +477,10 @@ internal sealed partial class OcrService : IDisposable
         public int Top => Bounds.Top;
     }
 
-    [GeneratedRegex(@"(?:You\s+have\s+)?(obtained|earned)\s+(.+?)(?:\.|$)", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"^[^A-Za-z0-9]*You\s+have\s+(obtained|earned)\s+(.+?)(?:\.|$)", RegexOptions.IgnoreCase)]
     private static partial Regex YellowItemRegex();
 
-    [GeneratedRegex(@"(?:You\s+have\s+)?acquired\s+([0-9OIl|, ]+)\s*XP\s+and\s+([0-9OIl|, ]+)\s*SP", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"^[^A-Za-z0-9]*You\s+have\s+acquired\s+([0-9OIl|, ]+)\s*XP\s+and\s+([0-9OIl|, ]+)\s*SP", RegexOptions.IgnoreCase)]
     private static partial Regex ExperienceRegex();
 
     [GeneratedRegex(@"([0-9OIl|, ]+)\s*XP\s+(?:and|ancl|ond)?\s*([0-9OIl|, ]+)\s*SP", RegexOptions.IgnoreCase)]

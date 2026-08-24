@@ -1,6 +1,6 @@
 # LootChatReaderLU4
 
-Current version: **1.20**
+Current version: **1.21**
 
 LootChatReaderLU4 is a local Windows application that reads the LU4 system chat from a selected screen area and keeps loot statistics.
 
@@ -10,6 +10,8 @@ LootChatReaderLU4 is a local Windows application that reads the LU4 system chat 
 - white `You have acquired ... XP and ... SP` — experience and SP;
 - Adena is counted separately from item drops.
 
+Only messages whose first meaningful words are `You have` are accepted. Party messages beginning with another character's nickname are ignored for items, Adena, XP, and SP.
+
 ## How it works
 
 The application periodically captures only the window rectangle selected by the user. Yellow and white chat rows are extracted by color and recognized locally with Tesseract OCR. Item names are matched against the bundled `mw2.wiki` item index to correct common OCR mistakes. The catalog also contains the wiki item type and subtype, such as `Quest Item`, `Other`, or `Other / Material`. Summary placement is based strictly on that catalog type rather than on whether the chat used `obtained` or `earned`. The item catalog and every icon currently available from the wiki are embedded in the EXE, so recognition and icon display work without an internet connection.
@@ -18,9 +20,11 @@ Each top-level tracker tab has independent window/area settings, monitoring cont
 
 The **Summary** tab shows aggregated drops and quest items. **Full Logs** keeps every accepted event. XP, SP, Adena, and active session time are displayed separately. **Share** copies the currently displayed summary to the clipboard.
 
-The **Overlay Settings** section configures all in-game panels for the current tracker. Adena, XP, and SP can be placed to the left, above, to the right, or below the selected chat area. The obtained-items and quest-items panels each have an independent visually selected rectangle inside the game window; that rectangle controls both position and size. Their visibility is controlled by the two checkboxes on the tracker main page.
+The **Overlay / Assist Settings** section configures all in-game panels and the assist area for the current tracker. Adena, XP, and SP can be placed to the left, above, to the right, or below the selected chat area. The obtained-items and quest-items panels each have an independent visually selected rectangle inside the game window; that rectangle controls both position and size. Their visibility is controlled by the two overlay checkboxes on the tracker main page.
 
-All overlay panels are permanently transparent to mouse input. There is no `More` button, Shift mode, in-game menu, dragging, resizing, or overlay interaction hook. Position and size are changed only through **Overlay Settings**, so the overlay cannot interfere with L2 controls. Each overlay is natively owned by its selected game window: only the foreground game's panels are raised, so multiple tracked clients do not cover unrelated applications or each other.
+The optional **Enable assist RMB helper** checkbox runs only while that tracker is monitoring. Every 50–500 ms it chooses a new random point inside the independently selected assist area and posts a right-button click directly to the exact bound LU4 window. Because the message is addressed to that window rather than the desktop foreground, another normal window covering the client does not receive the click. The helper pauses when the selected client is minimized or unavailable and never falls back to another character window.
+
+All overlay panels are permanently transparent to mouse input. There is no `More` button, Shift mode, in-game menu, dragging, resizing, or overlay interaction hook. Position and size are changed only through **Overlay / Assist Settings**, so the overlay cannot interfere with L2 controls. Each overlay is natively owned by its selected game window: only the foreground game's panels are raised, so multiple tracked clients do not cover unrelated applications or each other.
 
 A session remains active across Stop/Start cycles. **Clear All** closes the current session and begins a new one immediately if monitoring is running. Closing the application also closes every started session. Completed sessions are saved per tracker and listed newest-first in **Tracking history**; selecting one restores its totals, item lists, full logs, and elapsed time in read-only mode.
 
@@ -35,7 +39,7 @@ Screenshots are never written to disk. Tracker settings and completed tracking h
 3. In each tracker, click **Select Window / Area**, select its LU4 window, and mark only the system chat message area.
 4. Click **Start** independently in every tracker that should be monitored.
 5. Use **Stop** to pause a tracker and **Clear All** to archive and reset its current statistics.
-6. Optionally open **Overlay Settings** to select panel placement and size, then enable the item and/or quest-item overlay checkboxes on the tracker page.
+6. Optionally open **Overlay / Assist Settings** to select panel placement, assist click area, and sizes. Enable the desired overlay checkboxes and/or **Enable assist RMB helper** on the tracker page.
 
 Windowed or borderless-windowed game mode is recommended. Exclusive fullscreen can prevent Windows screen capture from reading the game frame.
 

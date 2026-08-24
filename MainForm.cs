@@ -10,6 +10,7 @@ internal sealed class TrackerView : UserControl
     private readonly Action _saveWorkspace;
     private readonly System.Windows.Forms.Timer _captureTimer;
     private readonly System.Windows.Forms.Timer _elapsedTimer;
+    private readonly System.Windows.Forms.Timer _assistTimer;
     private readonly Stopwatch _elapsedStopwatch = new();
     private readonly EventSequenceTracker _eventTracker = new();
     private readonly ChatFrameMotionDetector _chatFrameMotionDetector = new();
@@ -26,6 +27,7 @@ internal sealed class TrackerView : UserControl
     private readonly Button _overlaySettingsButton = new();
     private readonly CheckBox _showItemsOverlayCheck = new();
     private readonly CheckBox _showQuestItemsOverlayCheck = new();
+    private readonly CheckBox _enableAssistCheck = new();
     private readonly Label _regionLabel = new();
     private readonly Label _statusLabel = new();
     private readonly Label _adenaValueLabel = new();
@@ -66,6 +68,8 @@ internal sealed class TrackerView : UserControl
         _captureTimer.Tick += CaptureTimerOnTick;
         _elapsedTimer = new System.Windows.Forms.Timer { Interval = 1000 };
         _elapsedTimer.Tick += (_, _) => UpdateElapsedTime();
+        _assistTimer = new System.Windows.Forms.Timer();
+        _assistTimer.Tick += AssistTimerOnTick;
         _mouseWheelMonitor.WheelScrolled += MouseWheelMonitorOnWheelScrolled;
 
         _itemImages.ColorDepth = ColorDepth.Depth32Bit;
@@ -123,7 +127,7 @@ internal sealed class TrackerView : UserControl
         _clearButton.Height = 32;
         _clearButton.Click += (_, _) => ClearData();
 
-        _overlaySettingsButton.Text = "Overlay Settings";
+        _overlaySettingsButton.Text = "Overlay / Assist Settings";
         _overlaySettingsButton.AutoSize = true;
         _overlaySettingsButton.Height = 32;
         _overlaySettingsButton.Click += (_, _) => OpenOverlaySettings();
@@ -267,8 +271,8 @@ internal sealed class TrackerView : UserControl
     {
         var panel = new FlowLayoutPanel
         {
-            Width = 210,
-            Height = 65,
+            Width = 250,
+            Height = 76,
             FlowDirection = FlowDirection.TopDown,
             WrapContents = false,
             Margin = new Padding(4, 0, 0, 0)
@@ -281,8 +285,13 @@ internal sealed class TrackerView : UserControl
         _showQuestItemsOverlayCheck.AutoSize = true;
         _showQuestItemsOverlayCheck.Checked = _settings.ShowQuestItemsOverlay;
         _showQuestItemsOverlayCheck.CheckedChanged += OverlayVisibilityChanged;
+        _enableAssistCheck.Text = "Enable assist RMB helper";
+        _enableAssistCheck.AutoSize = true;
+        _enableAssistCheck.Checked = _settings.EnableAssistHelper;
+        _enableAssistCheck.CheckedChanged += OverlayVisibilityChanged;
         panel.Controls.Add(_showItemsOverlayCheck);
         panel.Controls.Add(_showQuestItemsOverlayCheck);
+        panel.Controls.Add(_enableAssistCheck);
         return panel;
     }
 
@@ -290,7 +299,9 @@ internal sealed class TrackerView : UserControl
     {
         _settings.ShowItemsOverlay = _showItemsOverlayCheck.Checked;
         _settings.ShowQuestItemsOverlay = _showQuestItemsOverlayCheck.Checked;
+        _settings.EnableAssistHelper = _enableAssistCheck.Checked;
         _overlayController?.RefreshConfiguration();
+        RefreshAssistTimer();
         UpdateRegionLabel();
         _saveWorkspace();
     }
@@ -437,9 +448,11 @@ internal sealed class TrackerView : UserControl
 
     private void OpenOverlaySettings()
     {
+        _assistTimer.Stop();
         using var dialog = new OverlaySettingsForm(_settings, SelectOverlayRegionAsync);
         if (dialog.ShowDialog(this) != DialogResult.OK)
         {
+            RefreshAssistTimer();
             return;
         }
 
@@ -452,9 +465,15 @@ internal sealed class TrackerView : UserControl
         {
             _settings.SetQuestItemsOverlayRegion(dialog.QuestItemsRegion);
         }
+        if (dialog.AssistRegionSet)
+        {
+            _settings.SetAssistRegion(dialog.AssistRegion);
+        }
 
         _overlayController?.RefreshConfiguration();
+        RefreshAssistTimer();
         UpdateRegionLabel();
+        UpdateControls();
         _saveWorkspace();
     }
 
@@ -663,6 +682,7 @@ internal sealed class TrackerView : UserControl
             // OCR remains usable if Windows does not allow installing the mouse hook.
         }
         _captureTimer.Start();
+        RefreshAssistTimer();
         SetStatus("Monitoring is running.", true);
         UpdateControls();
         _ = CaptureAndRecognizeAsync();
@@ -671,6 +691,7 @@ internal sealed class TrackerView : UserControl
     private void StopMonitoring()
     {
         _captureTimer.Stop();
+        _assistTimer.Stop();
         _mouseWheelMonitor.Stop();
         _monitoring = false;
         _elapsedStopwatch.Stop();
@@ -678,6 +699,43 @@ internal sealed class TrackerView : UserControl
         UpdateElapsedTime();
         SetStatus("Monitoring stopped.", false);
         UpdateControls();
+    }
+
+    private void AssistTimerOnTick(object? sender, EventArgs e)
+    {
+        _assistTimer.Stop();
+        if (!_monitoring
+            || !_settings.EnableAssistHelper
+            || !_settings.AssistRegionSet)
+        {
+            return;
+        }
+
+        var targetWindow = ScreenCaptureService.ResolveWindow(_settings, _targetWindowHandle);
+        if (targetWindow is not null && !targetWindow.IsMinimized)
+        {
+            _targetWindowHandle = targetWindow.Handle;
+            _ = BackgroundRightClickService.TryPostRandomClick(
+                targetWindow.Handle,
+                _settings.AssistRegion,
+                new Size(_settings.ReferenceWindowWidth, _settings.ReferenceWindowHeight));
+        }
+
+        RefreshAssistTimer();
+    }
+
+    private void RefreshAssistTimer()
+    {
+        _assistTimer.Stop();
+        if (!_monitoring
+            || !_settings.EnableAssistHelper
+            || !_settings.AssistRegionSet)
+        {
+            return;
+        }
+
+        _assistTimer.Interval = BackgroundRightClickService.NextInterval();
+        _assistTimer.Start();
     }
 
     private async void CaptureTimerOnTick(object? sender, EventArgs e)
@@ -1143,8 +1201,9 @@ internal sealed class TrackerView : UserControl
         var statsOverlay = _settings.OverlayPlacement == OverlayPlacement.Off
             ? "off"
             : _settings.OverlayPlacement.ToString().ToLowerInvariant();
+        var assist = _settings.EnableAssistHelper && _settings.AssistRegionSet ? "on" : "off";
         _regionLabel.Text = _settings.HasCaptureRegion
-            ? $"Window: {_settings.TargetWindowTitle} · area: {_settings.CaptureWidth}×{_settings.CaptureHeight} · stats overlay: {statsOverlay}"
+            ? $"Window: {_settings.TargetWindowTitle} · area: {_settings.CaptureWidth}×{_settings.CaptureHeight} · stats overlay: {statsOverlay} · assist: {assist}"
             : $"Window and area not selected · stats overlay: {statsOverlay}";
     }
 
@@ -1158,6 +1217,7 @@ internal sealed class TrackerView : UserControl
         _overlaySettingsButton.Enabled = current;
         _showItemsOverlayCheck.Enabled = current;
         _showQuestItemsOverlayCheck.Enabled = current;
+        _enableAssistCheck.Enabled = current && _settings.AssistRegionSet;
     }
 
     private void SetStatus(string text, bool active)
@@ -1418,6 +1478,8 @@ internal sealed class TrackerView : UserControl
             _captureTimer.Dispose();
             _elapsedTimer.Stop();
             _elapsedTimer.Dispose();
+            _assistTimer.Stop();
+            _assistTimer.Dispose();
             _mouseWheelMonitor.Dispose();
             _overlayController?.Dispose();
             _ocrService?.Dispose();
