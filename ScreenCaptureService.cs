@@ -110,10 +110,24 @@ internal static class ScreenCaptureService
         Bitmap? capturedWindow;
         try
         {
-            capturedWindow = WindowCapture.CaptureWindow(
-                windowHandle,
-                CaptureStrategy.WgcOnly,
-                timeoutMs: 900);
+            var strategy = SelectCaptureStrategy(windowHandle);
+            try
+            {
+                capturedWindow = WindowCapture.CaptureWindow(windowHandle, strategy, timeoutMs: 900);
+            }
+            catch when (strategy == CaptureStrategy.DxgiOnly)
+            {
+                capturedWindow = null;
+            }
+            if (capturedWindow is null && strategy == CaptureStrategy.DxgiOnly)
+            {
+                // Keep recognition alive if Desktop Duplication is temporarily
+                // unavailable, accepting a WGC border for this fallback frame.
+                capturedWindow = WindowCapture.CaptureWindow(
+                    windowHandle,
+                    CaptureStrategy.WgcOnly,
+                    timeoutMs: 900);
+            }
         }
         catch (Exception exception) when (!IsWindow(windowHandle) || IsIconic(windowHandle))
         {
@@ -133,6 +147,21 @@ internal static class ScreenCaptureService
         }
 
         return windowBitmap.Clone(crop, PixelFormat.Format24bppRgb);
+    }
+
+    internal static CaptureStrategy SelectCaptureStrategy(nint windowHandle)
+    {
+        return SelectCaptureStrategy(windowHandle, GetForegroundWindow());
+    }
+
+    internal static CaptureStrategy SelectCaptureStrategy(nint windowHandle, nint foreground)
+    {
+        // Desktop Duplication has no Windows capture border but can only see an
+        // unobscured window. Use it while the player is actively in this client;
+        // retain WGC for covered/inactive clients because OCR must still work.
+        return foreground == windowHandle || (foreground != nint.Zero && IsChild(windowHandle, foreground))
+            ? CaptureStrategy.DxgiOnly
+            : CaptureStrategy.WgcOnly;
     }
 
     private static bool TryDescribePreferredWindow(
@@ -331,6 +360,13 @@ internal static class ScreenCaptureService
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetForegroundWindow(nint handle);
+
+    [DllImport("user32.dll")]
+    private static extern nint GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsChild(nint parent, nint child);
 }
 
 internal sealed class WindowCaptureUnavailableException : Exception

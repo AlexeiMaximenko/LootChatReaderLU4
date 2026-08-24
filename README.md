@@ -1,6 +1,6 @@
 # LootChatReaderLU4
 
-Current version: **1.21**
+Current version: **1.22**
 
 LootChatReaderLU4 is a local Windows application that reads the LU4 system chat from a selected screen area and keeps loot statistics.
 
@@ -22,7 +22,7 @@ The **Summary** tab shows aggregated drops and quest items. **Full Logs** keeps 
 
 The **Overlay / Assist Settings** section configures all in-game panels and the assist area for the current tracker. Adena, XP, and SP can be placed to the left, above, to the right, or below the selected chat area. The obtained-items and quest-items panels each have an independent visually selected rectangle inside the game window; that rectangle controls both position and size. Their visibility is controlled by the two overlay checkboxes on the tracker main page.
 
-The optional **Enable assist RMB helper** checkbox runs only while that tracker is monitoring. Every 50–500 ms it chooses a new random point inside the independently selected assist area and posts a right-button click directly to the exact bound LU4 window. Because the message is addressed to that window rather than the desktop foreground, another normal window covering the client does not receive the click. The helper pauses when the selected client is minimized or unavailable and never falls back to another character window.
+The optional **Enable assist RMB helper** checkbox runs only while that tracker is monitoring. Every 50–500 ms it chooses a new random point inside the independently selected assist area. For a covered client it addresses the deepest child/render HWND directly; for the active game it uses a raw mouse-input fallback and restores the previous pointer position. The application requests administrator rights at startup because Windows UIPI otherwise blocks background messages when LU4 is elevated. The helper pauses when the selected client is minimized or unavailable and never falls back to another character window. A client that exclusively consumes Raw Input while inactive may still require foreground activation; the application deliberately does not inject code or drivers into the game process.
 
 All overlay panels are permanently transparent to mouse input. There is no `More` button, Shift mode, in-game menu, dragging, resizing, or overlay interaction hook. Position and size are changed only through **Overlay / Assist Settings**, so the overlay cannot interfere with L2 controls. Each overlay is natively owned by its selected game window: only the foreground game's panels are raised, so multiple tracked clients do not cover unrelated applications or each other.
 
@@ -43,7 +43,7 @@ Screenshots are never written to disk. Tracker settings and completed tracking h
 
 Windowed or borderless-windowed game mode is recommended. Exclusive fullscreen can prevent Windows screen capture from reading the game frame.
 
-The capture is bound to the selected game window through Windows Graphics Capture. Other applications may cover the game without affecting recognition. If the game is minimized, closed, restarting, or temporarily stops producing frames, OCR pauses silently while monitoring and elapsed time continue. Recognition resumes automatically after the selected window becomes available again.
+Capture is bound to the selected game window. While that client is active and visible, the application uses border-free DXGI Desktop Duplication, avoiding the flashing yellow Windows capture indicator. For an inactive or covered client it switches to Windows Graphics Capture so another application may cover the game without affecting recognition. Windows can show its capture border in that fallback mode; Microsoft requires packaged-app capability and explicit consent to suppress it, which is unavailable to a portable single-file EXE. If the game is minimized, closed, restarting, or temporarily stops producing frames, OCR pauses silently while monitoring and elapsed time continue. Recognition resumes automatically after the selected window becomes available again.
 
 ## Build
 

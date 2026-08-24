@@ -1339,6 +1339,11 @@ internal static class Program
         cover.Show();
         cover.BringToFront();
         Application.DoEvents();
+        if (ScreenCaptureService.SelectCaptureStrategy(target.Handle, cover.Handle)
+            != WgcSharp.CaptureStrategy.WgcOnly)
+        {
+            throw new InvalidOperationException("A covered target did not select WGC capture.");
+        }
 
         var posted = BackgroundRightClickService.TryPostRandomClick(
             target.Handle,
@@ -1349,6 +1354,12 @@ internal static class Program
         {
             throw new InvalidOperationException(
                 $"Covered background right-click failed: posted={posted}, down={rightDown}, up={rightUp}.");
+        }
+
+        if (ScreenCaptureService.SelectCaptureStrategy(target.Handle, target.Handle)
+            != WgcSharp.CaptureStrategy.DxgiOnly)
+        {
+            throw new InvalidOperationException("The active target did not select border-free DXGI capture.");
         }
 
         for (var index = 0; index < 1000; index++)
@@ -1363,7 +1374,9 @@ internal static class Program
 
         cover.Close();
         target.Close();
-        Console.WriteLine("ASSIST CLICK: covered target received RMB down/up; random interval stayed within 50-500 ms");
+        Console.WriteLine(
+            "ASSIST CLICK: covered HWND messaging passed; foreground SendInput fallback enabled; " +
+            "active capture uses border-free DXGI; random interval stayed within 50-500 ms");
     }
 
     private static void RunWindowListTest()
